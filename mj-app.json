@@ -1,0 +1,67 @@
+{
+  "manifestVersion": 1,
+  "name": "skip-client",
+  "displayName": "Skip Client",
+  "description": "Installs the Skip client-side footprint — the Skip proxy agent, SDK, scoped callback-key provisioner, server middleware, and the Skip Service identity (service account, role, query-entity permissions) — only on the MJ instances that use Skip.",
+  "version": "1.0.0",
+  "license": "ISC",
+  "icon": "fa-robot",
+  "color": "#5B2D90",
+  "publisher": {
+    "name": "BlueCypress"
+  },
+  "repository": "https://github.com/BlueCypress/Skip-Client-Open-App",
+  "mjVersionRange": ">=5.41.0",
+  "schema": {
+    "name": "skip_client",
+    "createIfNotExists": true
+  },
+  "migrations": {
+    "directory": "migrations",
+    "engine": "skyway"
+  },
+  "packages": {
+    "server": [
+      {
+        "name": "@memberjunction/skip-client",
+        "role": "bootstrap",
+        "startupExport": "registerSkip"
+      }
+    ]
+  },
+  "configuration": {
+    "schema": {
+      "type": "object",
+      "properties": {
+        "chatURL": {
+          "type": "string",
+          "title": "Skip API chat URL",
+          "description": "ASK_SKIP_CHAT_URL — the Skip API endpoint the client posts requests to."
+        },
+        "apiKey": {
+          "type": "string",
+          "title": "Skip API key",
+          "format": "password",
+          "description": "ASK_SKIP_API_KEY — outbound key sent to the Skip API. Stored encrypted in the MJ credential store."
+        },
+        "organizationID": {
+          "type": "string",
+          "title": "Skip organization ID",
+          "description": "ASK_SKIP_ORGANIZATION_ID."
+        },
+        "organizationInfo": {
+          "type": "string",
+          "title": "Skip organization info",
+          "description": "ASK_SKIP_ORGANIZATION_INFO (optional)."
+        }
+      },
+      "required": ["chatURL", "apiKey"]
+    }
+  },
+  "hooks": {
+    "postInstallModule": "@memberjunction/skip-client/setup",
+    "preRemoveModule": "@memberjunction/skip-client/teardown"
+  },
+  "categories": ["ai"],
+  "tags": ["skip", "ai", "assistant"]
+}

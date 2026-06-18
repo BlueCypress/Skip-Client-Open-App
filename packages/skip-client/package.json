@@ -1,0 +1,57 @@
+{
+  "name": "@memberjunction/skip-client",
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Skip Client Open App server package — SkipProxyAgent, SkipSDK, scoped callback-key provisioner, server middleware, and in-process install/uninstall hooks. Loads only on MJ instances that install the Skip Client Open App.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./setup": {
+      "types": "./dist/setup.d.ts",
+      "default": "./dist/setup.js"
+    },
+    "./teardown": {
+      "types": "./dist/teardown.d.ts",
+      "default": "./dist/teardown.js"
+    }
+  },
+  "files": [
+    "/dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "author": "BlueCypress",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BlueCypress/Skip-Client-Open-App"
+  },
+  "dependencies": {
+    "@memberjunction/ai": "5.41.0",
+    "@memberjunction/ai-agents": "5.41.0",
+    "@memberjunction/ai-core-plus": "5.41.0",
+    "@memberjunction/aiengine": "5.41.0",
+    "@memberjunction/api-keys": "5.41.0",
+    "@memberjunction/core": "5.41.0",
+    "@memberjunction/core-entities": "5.41.0",
+    "@memberjunction/credentials": "5.41.0",
+    "@memberjunction/data-context": "5.41.0",
+    "@memberjunction/global": "5.41.0",
+    "@memberjunction/interactive-component-types": "5.41.0",
+    "@memberjunction/server": "5.41.0",
+    "@memberjunction/skip-types": "5.41.0",
+    "@memberjunction/sqlserver-dataprovider": "5.41.0",
+    "mssql": "^11.0.1",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}
