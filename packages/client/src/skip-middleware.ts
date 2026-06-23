@@ -17,8 +17,7 @@ import { LogStatus, LogError, Metadata } from '@memberjunction/core';
 import type { IMetadataProvider } from '@memberjunction/core';
 import { GetAPIKeyEngine } from '@memberjunction/api-keys';
 import { UserCache } from '@memberjunction/sqlserver-dataprovider';
-import { getSkipConfig } from './skip-config.js';
-import { ensureSkipRecords } from './skip-records.js';
+import { getSkipConfig, ensureSkipRecords } from '@askskip/client-core';
 
 // Side-effect import: ensure SkipProxyAgent's @RegisterClass(BaseAgent, 'SkipProxyAgent') runs.
 import './skip-agent.js';

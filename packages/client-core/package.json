@@ -1,0 +1,46 @@
+{
+  "name": "@askskip/client-core",
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Skip Client Open App shared foundation — config + API-key resolver, Skip AI Agent / component-registry record helpers, and the in-process install (setup) / uninstall (teardown) hooks referenced by the app manifest. Deliberately light (core + credentials only) so install hooks run without the runtime package's heavy dependencies.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./setup": {
+      "types": "./dist/setup.d.ts",
+      "default": "./dist/setup.js"
+    },
+    "./teardown": {
+      "types": "./dist/teardown.d.ts",
+      "default": "./dist/teardown.js"
+    }
+  },
+  "files": [
+    "/dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "author": "BlueCypress",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BlueCypress/Skip-Client-Open-App"
+  },
+  "publishConfig": {
+    "access": "restricted"
+  },
+  "dependencies": {
+    "@memberjunction/core": "5.42.0",
+    "@memberjunction/credentials": "5.42.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}

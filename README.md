@@ -5,11 +5,19 @@ client-side footprint** onto an MJ instance — and only onto the instances that
 It replaces the previous approach of baking Skip's agent code and security records into MJ core
 (which shipped them to every MJ deployment).
 
+> **Private.** This repo is private, and its two npm packages (`@askskip/client`,
+> `@askskip/client-core`) are published as **private** packages in the `@askskip` org. Installing
+> them — including via `mj app install` — requires npm read access to `@askskip`. See
+> [PUBLISHING.md](PUBLISHING.md).
+
 ## What it deploys (only on install)
 
-- **Server package `@bluecypress/skip-client`** (`packages/skip-client`): the `SkipProxyAgent`,
-  `SkipSDK`, the scoped callback-key provisioner, and a `BaseServerMiddleware` that activates them.
-  It is wired into MJAPI via the manifest's `packages.server` bootstrap entry (`registerSkip`).
+- **Server package `@askskip/client`** (`packages/client`): the `SkipProxyAgent`, `SkipSDK`, the
+  scoped callback-key provisioner, and a `BaseServerMiddleware` that activates them. It is wired into
+  MJAPI via the manifest's `packages.server` bootstrap entry (`registerSkip`). It depends on
+  **`@askskip/client-core`** (`packages/client-core`) — the lighter shared foundation holding the
+  config/record helpers plus the in-process install (`setup`) / uninstall (`teardown`) hooks that the
+  manifest references.
 - **Skip identity records** (`migrations/`): a `Skip Service` role, a `Skip Service Account` user
   (`skip-service@skip.internal`), its UI + Skip Service role links, and full CRUD permissions on the
   MJ Query\* entity family — all written into the MJ core (`__mj`) schema via an idempotent migration.
@@ -36,6 +44,9 @@ key) and are a prerequisite for this app. See `skip-client-open-app-implementati
   - the Open App **interactive callback engine** (`hooks.postInstallModule` / `preRemoveModule` +
     interactive prompt callbacks), and
   - the slimmed scoped-API-key changes (resolver scope checks + the generic scopes + MJAPI grants).
+- **npm read access to the private `@askskip` packages** on the MJ instance (an `.npmrc` with a
+  read token for the `@askskip` scope), so `mj app install` can npm-install them. See
+  [PUBLISHING.md → Consuming the private packages](PUBLISHING.md#consuming-the-private-packages).
 - `MJ_BASE_ENCRYPTION_KEY` set on the client (so the Skip API key can be stored encrypted).
 
 ## Install / configure / remove
@@ -44,11 +55,11 @@ key) and are a prerequisite for this app. See `skip-client-open-app-implementati
 mj app install https://github.com/BlueCypress/Skip-Client-Open-App
 ```
 
-Install runs the migration (seeding the Skip identity into `__mj`), npm-installs
-`@bluecypress/skip-client`, wires it into `mj.config.cjs`, then runs the **in-process setup wizard**
-(`hooks.postInstallModule`) which prompts for the Skip API key + endpoint, stores the key in the MJ
-encrypted credential store, and reports the non-secret settings to set as MJAPI env vars. Restart MJAPI
-to activate the Skip proxy agent.
+Install runs the migration (seeding the Skip identity into `__mj`), npm-installs `@askskip/client`
+(which pulls in `@askskip/client-core`), wires it into `mj.config.cjs`, then runs the **in-process
+setup wizard** (`hooks.postInstallModule` → `@askskip/client-core/setup`) which prompts for the Skip
+API key + endpoint, stores the key in the MJ encrypted credential store, and reports the non-secret
+settings to set as MJAPI env vars. Restart MJAPI to activate the Skip proxy agent.
 
 ```bash
 mj app remove skip-client
@@ -73,6 +84,8 @@ records and any runtime-provisioned `Skip Callback:` API keys from `__mj` (FK-sa
 ```
 mj-app.json                         # Open App manifest
 migrations/                         # Skyway migration: Skip identity -> __mj
-packages/skip-client/               # @bluecypress/skip-client server package
+packages/client/                    # @askskip/client — server runtime package
+packages/client-core/               # @askskip/client-core — shared config/records + install hooks
+PUBLISHING.md                       # how to publish the npm packages (manual + CI)
 skip-client-open-app-implementation-plan.md   # full design + MJ-core changes
 ```

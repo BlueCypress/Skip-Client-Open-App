@@ -18,7 +18,7 @@
 import { LogError, LogStatus, Metadata, RunView, UserInfo } from '@memberjunction/core';
 import { GetAPIKeyEngine } from '@memberjunction/api-keys';
 import { UserCache } from '@memberjunction/sqlserver-dataprovider';
-import { getSkipConfig } from './skip-config.js';
+import { getSkipConfig } from '@askskip/client-core';
 
 /** The email used for the Skip service account (deployed via MJ metadata). */
 const SKIP_SERVICE_EMAIL = 'skip-service@skip.internal';

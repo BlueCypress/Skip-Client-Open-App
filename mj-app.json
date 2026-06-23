@@ -3,7 +3,7 @@
   "name": "skip-client",
   "displayName": "Skip Client",
   "description": "Installs the Skip client-side footprint — the Skip proxy agent, SDK, scoped callback-key provisioner, server middleware, and the Skip Service identity (service account, role, query-entity permissions) — only on the MJ instances that use Skip.",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "license": "ISC",
   "icon": "fa-robot",
   "color": "#5B2D90",
@@ -23,7 +23,7 @@
   "packages": {
     "server": [
       {
-        "name": "@bluecypress/skip-client",
+        "name": "@askskip/client",
         "role": "bootstrap",
         "startupExport": "registerSkip"
       }
@@ -59,8 +59,8 @@
     }
   },
   "hooks": {
-    "postInstallModule": "@bluecypress/skip-client/setup",
-    "preRemoveModule": "@bluecypress/skip-client/teardown"
+    "postInstallModule": "@askskip/client-core/setup",
+    "preRemoveModule": "@askskip/client-core/teardown"
   },
   "categories": ["ai"],
   "tags": ["skip", "ai", "assistant"]
