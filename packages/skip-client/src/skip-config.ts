@@ -37,10 +37,13 @@ export function getSkipConfig(): SkipClientConfig {
         apiKey: process.env.ASK_SKIP_API_KEY,
         orgID: process.env.ASK_SKIP_ORGANIZATION_ID,
         organizationInfo: process.env.ASK_SKIP_ORGANIZATION_INFO,
-        baseUrl: process.env.GRAPHQL_BASE_URL,
-        publicUrl: process.env.MJAPI_PUBLIC_URL,
-        graphqlPort: process.env.GRAPHQL_PORT ? parseInt(process.env.GRAPHQL_PORT) : undefined,
-        graphqlRootPath: process.env.GRAPHQL_ROOT_PATH,
+        // Defaults mirror MJServer's config.ts (baseUrl/publicUrl/graphqlPort/graphqlRootPath)
+        // so the callback URL `${baseUrl}:${graphqlPort}${graphqlRootPath}` is well-formed even
+        // when the env vars are unset (otherwise graphqlRootPath -> "undefined" in the URL).
+        baseUrl: process.env.GRAPHQL_BASE_URL ?? 'http://localhost',
+        publicUrl: process.env.MJAPI_PUBLIC_URL, // empty/undefined -> SDK falls back to baseUrl:port+rootPath
+        graphqlPort: process.env.GRAPHQL_PORT ? parseInt(process.env.GRAPHQL_PORT, 10) : 4000,
+        graphqlRootPath: process.env.GRAPHQL_ROOT_PATH ?? '/',
         entitiesToSend: {
             excludeSchemas: [],
             includeEntitiesFromExcludedSchemas: []
