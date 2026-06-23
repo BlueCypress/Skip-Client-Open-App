@@ -19,7 +19,7 @@
 --   ${flyway:defaultSchema}-> this app's schema ('skip_client'); unused here (records live in __mj)
 --
 -- Idempotent: every insert is guarded by the record's stable GUID, so re-install /
--- upgrade is a no-op. Reversed by the preRemove teardown hook in @memberjunction/skip-client.
+-- upgrade is a no-op. Reversed by the preRemove teardown hook in @bluecypress/skip-client.
 -- ============================================================================
 
 SET NOCOUNT ON;

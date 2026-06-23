@@ -23,7 +23,7 @@
   "packages": {
     "server": [
       {
-        "name": "@memberjunction/skip-client",
+        "name": "@bluecypress/skip-client",
         "role": "bootstrap",
         "startupExport": "registerSkip"
       }
@@ -59,8 +59,8 @@
     }
   },
   "hooks": {
-    "postInstallModule": "@memberjunction/skip-client/setup",
-    "preRemoveModule": "@memberjunction/skip-client/teardown"
+    "postInstallModule": "@bluecypress/skip-client/setup",
+    "preRemoveModule": "@bluecypress/skip-client/teardown"
   },
   "categories": ["ai"],
   "tags": ["skip", "ai", "assistant"]

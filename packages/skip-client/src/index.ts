@@ -1,5 +1,5 @@
 /**
- * @memberjunction/skip-client — Skip Client Open App server package.
+ * @bluecypress/skip-client — Skip Client Open App server package.
  *
  * Bundles the Skip client-side agent code (SkipProxyAgent, SkipSDK), the scoped
  * callback-key provisioner, the server middleware that activates it, and the
@@ -11,8 +11,8 @@
  *
  * The install/uninstall wizard modules are NOT re-exported here — they are separate
  * package entry points referenced by the app manifest's in-process hooks:
- *   - hooks.postInstallModule -> "@memberjunction/skip-client/setup"
- *   - hooks.preRemoveModule   -> "@memberjunction/skip-client/teardown"
+ *   - hooks.postInstallModule -> "@bluecypress/skip-client/setup"
+ *   - hooks.preRemoveModule   -> "@bluecypress/skip-client/teardown"
  */
 import { LogStatus } from '@memberjunction/core';
 import { SkipProxyAgent } from './skip-agent.js';

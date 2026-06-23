@@ -7,7 +7,7 @@ It replaces the previous approach of baking Skip's agent code and security recor
 
 ## What it deploys (only on install)
 
-- **Server package `@memberjunction/skip-client`** (`packages/skip-client`): the `SkipProxyAgent`,
+- **Server package `@bluecypress/skip-client`** (`packages/skip-client`): the `SkipProxyAgent`,
   `SkipSDK`, the scoped callback-key provisioner, and a `BaseServerMiddleware` that activates them.
   It is wired into MJAPI via the manifest's `packages.server` bootstrap entry (`registerSkip`).
 - **Skip identity records** (`migrations/`): a `Skip Service` role, a `Skip Service Account` user
@@ -45,7 +45,7 @@ mj app install https://github.com/BlueCypress/Skip-Client-Open-App
 ```
 
 Install runs the migration (seeding the Skip identity into `__mj`), npm-installs
-`@memberjunction/skip-client`, wires it into `mj.config.cjs`, then runs the **in-process setup wizard**
+`@bluecypress/skip-client`, wires it into `mj.config.cjs`, then runs the **in-process setup wizard**
 (`hooks.postInstallModule`) which prompts for the Skip API key + endpoint, stores the key in the MJ
 encrypted credential store, and reports the non-secret settings to set as MJAPI env vars. Restart MJAPI
 to activate the Skip proxy agent.
@@ -73,6 +73,6 @@ records and any runtime-provisioned `Skip Callback:` API keys from `__mj` (FK-sa
 ```
 mj-app.json                         # Open App manifest
 migrations/                         # Skyway migration: Skip identity -> __mj
-packages/skip-client/               # @memberjunction/skip-client server package
+packages/skip-client/               # @bluecypress/skip-client server package
 skip-client-open-app-implementation-plan.md   # full design + MJ-core changes
 ```
