@@ -23,7 +23,7 @@
   "packages": {
     "server": [
       {
-        "name": "@askskip/client",
+        "name": "@askskip/server",
         "role": "bootstrap",
         "startupExport": "registerSkip"
       }
@@ -59,8 +59,8 @@
     }
   },
   "hooks": {
-    "postInstallModule": "@askskip/client-core/setup",
-    "preRemoveModule": "@askskip/client-core/teardown"
+    "postInstallModule": "@askskip/core/setup",
+    "preRemoveModule": "@askskip/core/teardown"
   },
   "categories": ["ai"],
   "tags": ["skip", "ai", "assistant"]
