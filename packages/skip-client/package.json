@@ -1,5 +1,5 @@
 {
-  "name": "@memberjunction/skip-client",
+  "name": "@bluecypress/skip-client",
   "type": "module",
   "version": "1.0.0",
   "description": "Skip Client Open App server package — SkipProxyAgent, SkipSDK, scoped callback-key provisioner, server middleware, and in-process install/uninstall hooks. Loads only on MJ instances that install the Skip Client Open App.",
