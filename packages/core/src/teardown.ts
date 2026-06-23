@@ -1,7 +1,7 @@
 /**
  * Skip Client — in-process pre-remove teardown.
  *
- * Referenced by the app manifest as `hooks.preRemoveModule: "@askskip/client-core/teardown"`.
+ * Referenced by the app manifest as `hooks.preRemoveModule: "@askskip/core/teardown"`.
  * The Open App engine's RemoveApp() does NOT clean records the app seeded into the MJ core
  * (`__mj`) schema — its built-in metadata cleanup only covers the app's own schema. So this
  * hook reverses the identity footprint the install migration created, plus the scoped

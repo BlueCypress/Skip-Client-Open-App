@@ -29,7 +29,7 @@ import { MJConversationDetailEntity, QueryEngine } from '@memberjunction/core-en
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { gzip as gzipCompress, createGunzip } from 'zlib';
-import { getSkipConfig, getDbType, resolveSkipApiKey } from '@askskip/client-core';
+import { getSkipConfig, getDbType, resolveSkipApiKey } from '@askskip/core';
 import { getSkipCallbackKey, provisioningComplete as skipKeyProvisioned } from './skip-callback-key-provisioner.js';
 import { GetAIAPIKey } from '@memberjunction/ai';
 import { AIEngine } from '@memberjunction/aiengine';

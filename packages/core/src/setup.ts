@@ -1,7 +1,7 @@
 /**
  * Skip Client — in-process post-install setup wizard.
  *
- * Referenced by the app manifest as `hooks.postInstallModule: "@askskip/client-core/setup"`.
+ * Referenced by the app manifest as `hooks.postInstallModule: "@askskip/core/setup"`.
  * The Open App engine imports this module and awaits its default export with the live
  * install payload (DB provider, context user, interactive prompt callbacks). Running
  * in-process means: no execSync 120s ceiling, no need to self-bootstrap a DB connection,

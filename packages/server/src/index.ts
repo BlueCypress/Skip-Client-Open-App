@@ -1,5 +1,5 @@
 /**
- * @askskip/client — Skip Client Open App server (runtime) package.
+ * @askskip/server — Skip Client Open App server (runtime) package.
  *
  * Bundles the Skip client-side agent code (SkipProxyAgent, SkipSDK), the scoped
  * callback-key provisioner, and the server middleware that activates it. Loaded ONLY
@@ -9,16 +9,16 @@
  * `@RegisterClass` decorators for SkipProxyAgent and SkipMiddleware.
  *
  * The shared config/records kernel and the install/uninstall wizard modules live in
- * the lighter `@askskip/client-core` package (which this package depends on). The app
+ * the lighter `@askskip/core` package (which this package depends on). The app
  * manifest's in-process hooks point there:
- *   - hooks.postInstallModule -> "@askskip/client-core/setup"
- *   - hooks.preRemoveModule   -> "@askskip/client-core/teardown"
+ *   - hooks.postInstallModule -> "@askskip/core/setup"
+ *   - hooks.preRemoveModule   -> "@askskip/core/teardown"
  */
 import { LogStatus } from '@memberjunction/core';
 import { SkipProxyAgent } from './skip-agent.js';
 import { SkipMiddleware } from './skip-middleware.js';
 
-export * from '@askskip/client-core';
+export * from '@askskip/core';
 export * from './skip-sdk.js';
 export * from './skip-agent.js';
 export * from './skip-callback-key-provisioner.js';
