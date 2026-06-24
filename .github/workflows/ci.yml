@@ -1,0 +1,31 @@
+name: CI
+
+# Build check for pull requests so a broken TypeScript build never reaches main
+# (and therefore never triggers a publish). Builds the whole workspace in dependency
+# order. There are no tests yet, so this is build-only; add a test step when tests exist.
+
+on:
+  pull_request:
+    paths:
+      - 'packages/**'
+
+jobs:
+  build:
+    name: Build workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install workspace
+        run: npm ci
+
+      - name: Verify lockstep versions
+        run: npm run check:lockstep
+
+      - name: Build (core then server)
+        run: npm run build

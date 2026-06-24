@@ -1,0 +1,131 @@
+name: Release & publish to npm
+
+# MANUAL release (NOT automatic on merge) — trigger from the Actions tab: "Release & publish" ->
+# "Run workflow". It versions the app in LOCKSTEP (@askskip/core, @askskip/server, and mj-app.json
+# all move to one version), then tags and publishes both packages:
+#   - bump = auto (default): MINOR if migrations/, metadata/, or mj-app.json changed since the last
+#     release tag, else PATCH.
+#   - bump = patch | minor | major: use that level explicitly (major is only ever manual).
+#
+# The release commit is tagged and pushed back to main (marked [skip ci]). Publishing uses npm
+# trusted publishing (OIDC, no token); provenance is attached because the repo is public. Core is
+# published before server (server pins core's exact version).
+#
+# Prereq: the workflow pushes a commit + tag to main, so the GitHub Actions token must be allowed
+# to push to main (if main is a protected branch, allow the actions bot to bypass, or swap in a
+# PAT / GitHub App token). It fails BEFORE publishing if the push is rejected, so npm never drifts
+# ahead of git.
+
+on:
+  # Manual only — releases are NOT triggered on merge. Run from the Actions tab.
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Bump level — auto = minor if migrations/metadata/mj-app.json changed since last release, else patch'
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+
+concurrency:
+  group: release-askskip
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release & publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit the version bump + push the release tag to main
+      id-token: write # npm trusted publishing (OIDC) + provenance
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so we can diff the merged changes
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22' # >= 22.14.0 required by trusted publishing
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest # trusted publishing requires npm >= 11.5.1
+
+      - name: Install workspace
+        run: npm ci
+
+      # Use the chosen bump, or (default "auto") detect it from what changed since the last
+      # release tag: MINOR if migrations/, metadata/, or mj-app.json changed, else PATCH.
+      - name: Determine bump level
+        id: bump
+        run: |
+          LEVEL="${{ github.event.inputs.bump }}"
+          if [ "$LEVEL" = "auto" ]; then
+            LAST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -1 || true)"
+            if [ -n "$LAST_TAG" ]; then
+              CHANGED="$(git diff --name-only "$LAST_TAG" HEAD)"
+              echo "Changes since $LAST_TAG:"; echo "$CHANGED"
+              if echo "$CHANGED" | grep -qE '^(migrations/|metadata/|mj-app\.json$)'; then
+                LEVEL="minor"
+              else
+                LEVEL="patch"
+              fi
+            else
+              echo "No prior v* release tag — defaulting to patch."
+              LEVEL="patch"
+            fi
+            echo "Auto-detected -> $LEVEL (migrations/metadata/manifest = minor, code = patch)"
+          else
+            echo "Explicit bump -> $LEVEL"
+          fi
+          echo "level=$LEVEL" >> "$GITHUB_OUTPUT"
+
+      - name: Compute next version
+        id: ver
+        run: |
+          CUR="$(node -p "require('./packages/core/package.json').version")"
+          NEXT="$(node -e "const [a,b,c]=process.argv[1].split('.').map(Number);const t=process.argv[2];console.log(t==='major'?(a+1)+'.0.0':t==='minor'?a+'.'+(b+1)+'.0':a+'.'+b+'.'+(c+1));" "$CUR" "${{ steps.bump.outputs.level }}")"
+          echo "current=$CUR  next=$NEXT  (${{ steps.bump.outputs.level }})"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: Apply lockstep version bump
+        run: |
+          npm run version:lockstep "${{ steps.ver.outputs.next }}"
+          npm run check:lockstep
+          npm install --package-lock-only # keep the lockfile in sync with the new workspace versions
+
+      - name: Build (core then server)
+        run: npm run build
+
+      # Commit + tag + push BEFORE publishing: if the push is rejected (e.g. branch protection),
+      # the run fails here and npm is never published, so git and npm never drift.
+      - name: Commit, tag, and push the release
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add packages/core/package.json packages/server/package.json mj-app.json package-lock.json
+          git commit -m "chore(release): v${{ steps.ver.outputs.next }} (${{ steps.bump.outputs.level }}) [skip ci]"
+          git tag "v${{ steps.ver.outputs.next }}"
+          git push origin HEAD:main
+          git push origin "v${{ steps.ver.outputs.next }}"
+
+      # No NODE_AUTH_TOKEN: the npm CLI authenticates as the configured trusted publisher via OIDC.
+      # publishConfig.access=public publishes publicly; --provenance attaches a build attestation.
+      # Each step is a no-op if that exact version is already on npm (safe on re-run).
+      - name: Publish @askskip/core
+        working-directory: packages/core
+        run: |
+          if npm view "@askskip/core@${{ steps.ver.outputs.next }}" version >/dev/null 2>&1; then
+            echo "::notice::@askskip/core@${{ steps.ver.outputs.next }} already on npm — skipping."
+          else
+            npm publish --provenance
+          fi
+
+      - name: Publish @askskip/server
+        working-directory: packages/server
+        run: |
+          if npm view "@askskip/server@${{ steps.ver.outputs.next }}" version >/dev/null 2>&1; then
+            echo "::notice::@askskip/server@${{ steps.ver.outputs.next }} already on npm — skipping."
+          else
+            npm publish --provenance
+          fi
