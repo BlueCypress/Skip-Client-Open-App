@@ -5,9 +5,9 @@ client-side footprint** onto an MJ instance — and only onto the instances that
 It replaces the previous approach of baking Skip's agent code and security records into MJ core
 (which shipped them to every MJ deployment).
 
-> **Private.** This repo is private, and its two npm packages (`@askskip/server`,
-> `@askskip/core`) are published as **private** packages in the `@askskip` org. Installing
-> them — including via `mj app install` — requires npm read access to `@askskip`. See
+> **Public.** This repo is public, and its two npm packages (`@askskip/server`,
+> `@askskip/core`) are published as **public** packages in the `@askskip` org — no npm
+> authentication is required to install them (including via `mj app install`). See
 > [PUBLISHING.md](PUBLISHING.md).
 
 ## What it deploys (only on install)
@@ -44,9 +44,8 @@ key) and are a prerequisite for this app. See `skip-client-open-app-implementati
   - the Open App **interactive callback engine** (`hooks.postInstallModule` / `preRemoveModule` +
     interactive prompt callbacks), and
   - the slimmed scoped-API-key changes (resolver scope checks + the generic scopes + MJAPI grants).
-- **npm read access to the private `@askskip` packages** on the MJ instance (an `.npmrc` with a
-  read token for the `@askskip` scope), so `mj app install` can npm-install them. See
-  [PUBLISHING.md → Consuming the private packages](PUBLISHING.md#consuming-the-private-packages).
+- The two `@askskip` packages are **public** on npm, so `mj app install` can npm-install them with
+  **no authentication** (no `.npmrc` token needed). See [PUBLISHING.md](PUBLISHING.md).
 - `MJ_BASE_ENCRYPTION_KEY` set on the client (so the Skip API key can be stored encrypted).
 
 ## Install / configure / remove

@@ -6,7 +6,7 @@
   "version": "0.0.1",
   "license": "ISC",
   "icon": "fa-robot",
-  "color": "#5B2D90",
+  "color": "#147f9d",
   "publisher": {
     "name": "BlueCypress"
   },
@@ -55,13 +55,22 @@
           "description": "ASK_SKIP_ORGANIZATION_INFO (optional)."
         }
       },
-      "required": ["chatURL", "apiKey"]
+      "required": [
+        "chatURL",
+        "apiKey"
+      ]
     }
   },
   "hooks": {
     "postInstallModule": "@askskip/core/setup",
     "preRemoveModule": "@askskip/core/teardown"
   },
-  "categories": ["ai"],
-  "tags": ["skip", "ai", "assistant"]
+  "categories": [
+    "ai"
+  ],
+  "tags": [
+    "skip",
+    "ai",
+    "assistant"
+  ]
 }
