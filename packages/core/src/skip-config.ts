@@ -8,6 +8,12 @@
 
 import { CredentialEngine } from '@memberjunction/credentials';
 import type { UserInfo } from '@memberjunction/core';
+import { DEFAULT_SKIP_BASE_URL } from './generated/default-endpoint.js';
+
+export { DEFAULT_SKIP_BASE_URL };
+
+/** Default Skip chat endpoint derived from the baked-in base URL; undefined in builds without one. */
+export const DEFAULT_SKIP_CHAT_URL = DEFAULT_SKIP_BASE_URL ? `${DEFAULT_SKIP_BASE_URL}/chat` : undefined;
 
 /**
  * Configuration shape consumed by the Skip client SDK.
@@ -33,7 +39,7 @@ export interface SkipClientConfig {
  */
 export function getSkipConfig(): SkipClientConfig {
     return {
-        chatURL: process.env.ASK_SKIP_CHAT_URL,
+        chatURL: process.env.ASK_SKIP_CHAT_URL ?? DEFAULT_SKIP_CHAT_URL,
         apiKey: process.env.ASK_SKIP_API_KEY,
         orgID: process.env.ASK_SKIP_ORGANIZATION_ID,
         organizationInfo: process.env.ASK_SKIP_ORGANIZATION_INFO,

@@ -106,8 +106,18 @@ jobs:
           npm run check:lockstep
           npm install --package-lock-only # keep the lockfile in sync with the new workspace versions
 
+      # SKIP_DEFAULT_BASE_URL (repo Settings -> Variables) is baked into @askskip/core as the
+      # default Skip endpoint at build time — kept out of the source tree, present in the
+      # published artifact. Fail fast if unset so a release never ships without a default.
       - name: Build workspace (dependency order)
-        run: npm run build
+        env:
+          SKIP_DEFAULT_BASE_URL: ${{ vars.SKIP_DEFAULT_BASE_URL }}
+        run: |
+          if [ -z "$SKIP_DEFAULT_BASE_URL" ]; then
+            echo "::error::SKIP_DEFAULT_BASE_URL repository variable is not set — cannot bake the default Skip endpoint."
+            exit 1
+          fi
+          npm run build
 
       # Commit + tag + push BEFORE publishing: if the push is rejected (e.g. branch protection),
       # the run fails here and npm is never published, so git and npm never drift. All steps are

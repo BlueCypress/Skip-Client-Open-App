@@ -23,8 +23,8 @@
     "/dist"
   ],
   "scripts": {
-    "build": "tsc",
-    "watch": "tsc --watch"
+    "build": "node scripts/gen-default-endpoint.mjs && tsc",
+    "watch": "node scripts/gen-default-endpoint.mjs && tsc --watch"
   },
   "author": "BlueCypress",
   "license": "ISC",
@@ -36,8 +36,8 @@
     "access": "public"
   },
   "dependencies": {
-    "@memberjunction/core": "5.42.0",
-    "@memberjunction/credentials": "5.42.0"
+    "@memberjunction/core": "5.44.0",
+    "@memberjunction/credentials": "5.44.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

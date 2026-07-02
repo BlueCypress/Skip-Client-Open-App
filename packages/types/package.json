@@ -28,12 +28,12 @@
     "access": "public"
   },
   "dependencies": {
-    "@memberjunction/ai-core-plus": "5.42.0",
-    "@memberjunction/core": "5.42.0",
-    "@memberjunction/data-context": "5.42.0",
-    "@memberjunction/global": "5.42.0",
-    "@memberjunction/interactive-component-types": "5.42.0",
-    "@memberjunction/sql-dialect": "5.42.0"
+    "@memberjunction/ai-core-plus": "5.44.0",
+    "@memberjunction/core": "5.44.0",
+    "@memberjunction/data-context": "5.44.0",
+    "@memberjunction/global": "5.44.0",
+    "@memberjunction/interactive-component-types": "5.44.0",
+    "@memberjunction/sql-dialect": "5.44.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

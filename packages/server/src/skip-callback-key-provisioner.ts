@@ -59,11 +59,7 @@ let createdRawKey: string | null = null;
  * Example: "Skip Callback: https://skip.example.com"
  */
 function buildKeyLabel(): string {
-    const skipChatUrl = getSkipConfig().chatURL;
-    if (!skipChatUrl) {
-        throw new Error('ASK_SKIP_CHAT_URL is not configured — cannot provision Skip callback key');
-    }
-    return `Skip Callback: ${skipChatUrl}`;
+    return `Skip Callback: ${getSkipConfig().chatURL}`;
 }
 
 /**
