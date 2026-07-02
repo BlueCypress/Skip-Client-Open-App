@@ -3,7 +3,7 @@
   "name": "skip-client",
   "displayName": "Skip Client",
   "description": "Installs the Skip client-side footprint — the Skip proxy agent, SDK, scoped callback-key provisioner, server middleware, and the Skip Service identity (service account, role, query-entity permissions) — only on the MJ instances that use Skip.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "license": "ISC",
   "icon": "fa-robot",
   "color": "#147f9d",

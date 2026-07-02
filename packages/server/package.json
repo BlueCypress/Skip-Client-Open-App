@@ -1,7 +1,7 @@
 {
   "name": "@askskip/server",
   "type": "module",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Skip Client Open App server (runtime) package — SkipProxyAgent, SkipSDK, scoped callback-key provisioner, and server middleware. Loads only on MJ instances that install the Skip Client Open App.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -28,8 +28,8 @@
     "access": "public"
   },
   "dependencies": {
-    "@askskip/core": "0.0.2",
-    "@askskip/types": "0.0.2",
+    "@askskip/core": "0.0.3",
+    "@askskip/types": "0.0.3",
     "@memberjunction/ai": "5.42.0",
     "@memberjunction/ai-agents": "5.42.0",
     "@memberjunction/ai-core-plus": "5.42.0",
