@@ -1,7 +1,7 @@
 {
   "name": "@askskip/types",
   "type": "module",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Skip AI Assistant types shared between the Skip API, the MJAPI, and MemberJunction Explorer. Extracted from @memberjunction/skip-types into the @askskip scope.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
