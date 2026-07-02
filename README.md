@@ -5,8 +5,8 @@ client-side footprint** onto an MJ instance — and only onto the instances that
 It replaces the previous approach of baking Skip's agent code and security records into MJ core
 (which shipped them to every MJ deployment).
 
-> **Public.** This repo is public, and its two npm packages (`@askskip/server`,
-> `@askskip/core`) are published as **public** packages in the `@askskip` org — no npm
+> **Public.** This repo is public, and its npm packages (`@askskip/server`, `@askskip/core`,
+> `@askskip/types`) are published as **public** packages in the `@askskip` org — no npm
 > authentication is required to install them (including via `mj app install`). See
 > [PUBLISHING.md](PUBLISHING.md).
 
@@ -17,7 +17,8 @@ It replaces the previous approach of baking Skip's agent code and security recor
   MJAPI via the manifest's `packages.server` bootstrap entry (`registerSkip`). It depends on
   **`@askskip/core`** (`packages/core`) — the lighter shared foundation holding the
   config/record helpers plus the in-process install (`setup`) / uninstall (`teardown`) hooks that the
-  manifest references.
+  manifest references — and on **`@askskip/types`** (`packages/types`), the Skip request/response
+  types shared with the Skip API (extracted from the former `@memberjunction/skip-types`).
 - **Skip identity records** (`migrations/`): a `Skip Service` role, a `Skip Service Account` user
   (`skip-service@skip.internal`), its UI + Skip Service role links, and full CRUD permissions on the
   MJ Query\* entity family — all written into the MJ core (`__mj`) schema via an idempotent migration.
@@ -83,8 +84,9 @@ records and any runtime-provisioned `Skip Callback:` API keys from `__mj` (FK-sa
 ```
 mj-app.json                         # Open App manifest
 migrations/                         # Skyway migration: Skip identity -> __mj
+packages/types/                     # @askskip/types — Skip request/response types (shared w/ Skip API)
+packages/core/                      # @askskip/core — shared config/records + install hooks
 packages/server/                    # @askskip/server — server runtime package
-packages/core/               # @askskip/core — shared config/records + install hooks
 PUBLISHING.md                       # how to publish the npm packages (manual + CI)
 skip-client-open-app-implementation-plan.md   # full design + MJ-core changes
 ```

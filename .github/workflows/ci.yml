@@ -27,5 +27,5 @@ jobs:
       - name: Verify lockstep versions
         run: npm run check:lockstep
 
-      - name: Build (core then server)
+      - name: Build workspace (dependency order)
         run: npm run build

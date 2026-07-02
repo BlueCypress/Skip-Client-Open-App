@@ -22,7 +22,7 @@ import {
     SkipAPIArtifact,
     SkipAPIArtifactVersion,
     SkipAPIArtifactType
-} from '@memberjunction/skip-types';
+} from '@askskip/types';
 import { DataContext } from '@memberjunction/data-context';
 import { IMetadataProvider, UserInfo, LogStatus, LogError, Metadata, RunQuery, RunView, EntityInfo, EntityFieldInfo, EntityFieldValueInfo, DatabaseProviderBase } from '@memberjunction/core';
 import { MJConversationDetailEntity, QueryEngine } from '@memberjunction/core-entities';

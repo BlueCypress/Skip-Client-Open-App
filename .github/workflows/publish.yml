@@ -1,15 +1,17 @@
 name: Release & publish to npm
 
 # MANUAL release (NOT automatic on merge) — trigger from the Actions tab: "Release & publish" ->
-# "Run workflow". It versions the app in LOCKSTEP (@askskip/core, @askskip/server, and mj-app.json
-# all move to one version), then tags and publishes both packages:
+# "Run workflow". It versions the app in LOCKSTEP (every workspace package and mj-app.json all move
+# to one version), then tags and publishes every package:
 #   - bump = auto (default): MINOR if migrations/, metadata/, or mj-app.json changed since the last
 #     release tag, else PATCH.
 #   - bump = patch | minor | major: use that level explicitly (major is only ever manual).
 #
 # The release commit is tagged and pushed back to main (marked [skip ci]). Publishing uses npm
-# trusted publishing (OIDC, no token); provenance is attached because the repo is public. Core is
-# published before server (server pins core's exact version).
+# trusted publishing (OIDC, no token); provenance is attached because the repo is public. Packages
+# are published in dependency order (declared "workspaces" order) so a dependency publishes before
+# any dependent. The package list is derived from the workspace, so new packages are included
+# automatically — no workflow edits needed.
 #
 # Prereq: the workflow pushes a commit + tag to main, so the GitHub Actions token must be allowed
 # to push to main (if main is a protected branch, allow the actions bot to bypass, or swap in a
@@ -94,7 +96,7 @@ jobs:
           npm run check:lockstep
           npm install --package-lock-only # keep the lockfile in sync with the new workspace versions
 
-      - name: Build (core then server)
+      - name: Build workspace (dependency order)
         run: npm run build
 
       # Commit + tag + push BEFORE publishing: if the push is rejected (e.g. branch protection),
@@ -103,7 +105,7 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add packages/core/package.json packages/server/package.json mj-app.json package-lock.json
+          git add packages/*/package.json mj-app.json package-lock.json
           git commit -m "chore(release): v${{ steps.ver.outputs.next }} (${{ steps.bump.outputs.level }}) [skip ci]"
           git tag "v${{ steps.ver.outputs.next }}"
           git push origin HEAD:main
@@ -111,21 +113,18 @@ jobs:
 
       # No NODE_AUTH_TOKEN: the npm CLI authenticates as the configured trusted publisher via OIDC.
       # publishConfig.access=public publishes publicly; --provenance attaches a build attestation.
-      # Each step is a no-op if that exact version is already on npm (safe on re-run).
-      - name: Publish @askskip/core
-        working-directory: packages/core
+      # Publishes every workspace package in dependency (declared "workspaces") order, so a
+      # dependency publishes before any dependent. Each package is skipped if that exact version
+      # is already on npm (safe on re-run), and new packages are picked up automatically.
+      - name: Publish packages (dependency order; skip versions already on npm)
         run: |
-          if npm view "@askskip/core@${{ steps.ver.outputs.next }}" version >/dev/null 2>&1; then
-            echo "::notice::@askskip/core@${{ steps.ver.outputs.next }} already on npm — skipping."
-          else
-            npm publish --provenance
-          fi
-
-      - name: Publish @askskip/server
-        working-directory: packages/server
-        run: |
-          if npm view "@askskip/server@${{ steps.ver.outputs.next }}" version >/dev/null 2>&1; then
-            echo "::notice::@askskip/server@${{ steps.ver.outputs.next }} already on npm — skipping."
-          else
-            npm publish --provenance
-          fi
+          set -euo pipefail
+          while IFS=$'\t' read -r name dir version; do
+            [ -n "$name" ] || continue
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "::notice::$name@$version already on npm — skipping."
+            else
+              echo "Publishing $name@$version from $dir"
+              ( cd "$dir" && npm publish --provenance )
+            fi
+          done < <(node scripts/list-packages.mjs)

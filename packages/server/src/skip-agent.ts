@@ -17,7 +17,7 @@ import {
     SkipAPIAnalysisCompleteResponse,
     SkipAPIClarifyingQuestionResponse,
     SkipMessage
-} from "@memberjunction/skip-types";
+} from "@askskip/types";
 import { SkipSDK, SkipCallOptions } from "./skip-sdk.js";
 import { DataContext } from "@memberjunction/data-context";
 import { LogStatus, LogError, RunView, UserInfo } from "@memberjunction/core";

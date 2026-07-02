@@ -38,6 +38,16 @@ interface SkipHookPayload {
     Manifest: unknown;
 }
 
+/** Recover the Skip base URL from a chat URL by stripping a trailing "/chat". */
+function baseFromChatURL(chatURL: string | undefined): string | undefined {
+    return chatURL ? chatURL.replace(/\/+$/, '').replace(/\/chat$/i, '') : undefined;
+}
+
+/** Join a base URL and a path segment with exactly one separating slash. */
+function joinURL(base: string, segment: string): string {
+    return `${base.replace(/\/+$/, '')}/${segment}`;
+}
+
 export default async function setup(payload: SkipHookPayload): Promise<void> {
     const cb = payload.Callbacks;
     const contextUser = payload.ContextUser as UserInfo;
@@ -48,9 +58,14 @@ export default async function setup(payload: SkipHookPayload): Promise<void> {
     log('Configuring the Skip Client app...');
 
     // Gather configuration — prompt interactively (pre-filled from env), else use env values.
-    const chatURL = interactive
-        ? await cb!.OnPromptInput!('Skip API chat URL (ASK_SKIP_CHAT_URL)', { default: env.chatURL })
-        : env.chatURL;
+    // Skip's endpoints all hang off one base URL, so we prompt for the base (ASK_SKIP_URL) and
+    // derive the chat endpoint from it. The default is the existing ASK_SKIP_URL, or the base
+    // recovered from an existing ASK_SKIP_CHAT_URL so prior configs migrate cleanly.
+    const defaultBaseURL = process.env.ASK_SKIP_URL ?? baseFromChatURL(env.chatURL);
+    const baseURL = interactive
+        ? await cb!.OnPromptInput!('Skip API base URL (ASK_SKIP_URL)', { default: defaultBaseURL })
+        : defaultBaseURL;
+    const chatURL = baseURL ? joinURL(baseURL, 'chat') : env.chatURL;
     const orgID = interactive
         ? await cb!.OnPromptInput!('Skip organization ID (ASK_SKIP_ORGANIZATION_ID)', { default: env.orgID })
         : env.orgID;
@@ -101,6 +116,7 @@ export default async function setup(payload: SkipHookPayload): Promise<void> {
     // Non-secret settings are read from the environment by the SDK (getSkipConfig). Report
     // them so the operator can persist them as MJAPI env vars.
     log('Skip Client configuration summary — set these as MJAPI environment variables, then restart MJAPI:');
+    log(`  ASK_SKIP_URL=${baseURL ?? '(unset)'}`);
     log(`  ASK_SKIP_CHAT_URL=${chatURL ?? '(unset)'}`);
     log(`  ASK_SKIP_ORGANIZATION_ID=${orgID ?? '(unset)'}`);
     if (orgInfo) {

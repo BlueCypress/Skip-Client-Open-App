@@ -1,31 +1,32 @@
 #!/usr/bin/env node
 /**
- * Enforce lockstep versioning for the app: @askskip/core, @askskip/server, and mj-app.json.
+ * Enforce lockstep versioning across ALL workspace packages + mj-app.json.
  *
- * "Lockstep" = all three always share the same version AND @askskip/server depends on
- * @askskip/core at that EXACT version (no range), so the npm packages and the Open App
- * manifest (and therefore the release tag) are always released together at one version.
+ * "Lockstep" = every workspace package shares one version, every internal cross-dependency
+ * (a dep whose name is another workspace package) is pinned to that EXACT version (no range),
+ * and mj-app.json matches — so the npm packages, the Open App manifest, and the release tag
+ * always release together at one version.
+ *
+ * The package list is discovered from the root "workspaces" field (see workspaces.mjs), so
+ * adding a package requires no change here — it is picked up automatically.
  *
  * Usage:
- *   node scripts/lockstep-version.mjs <version>   Set BOTH packages + the internal pin to <version>.
- *   node scripts/lockstep-version.mjs --check       Verify lockstep; exit non-zero on any mismatch.
+ *   node scripts/lockstep-version.mjs <version>   Set every package + internal pin + manifest.
+ *   node scripts/lockstep-version.mjs --check      Verify lockstep; non-zero exit on any mismatch.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { repoRoot, readJSON, workspacePackages } from './workspaces.mjs';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const CORE = join(root, 'packages/core/package.json');
-const SERVER = join(root, 'packages/server/package.json');
-const MANIFEST = join(root, 'mj-app.json');
+const MANIFEST = join(repoRoot, 'mj-app.json');
+const DEP_SECTIONS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'];
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-
-const read = (p) => JSON.parse(readFileSync(p, 'utf8'));
 const write = (p, o) => writeFileSync(p, JSON.stringify(o, null, 2) + '\n');
 
-const core = read(CORE);
-const server = read(SERVER);
-const manifest = read(MANIFEST);
+const pkgs = workspacePackages();
+const internal = new Set(pkgs.map((p) => p.json.name)); // workspace package names
+const manifest = readJSON(MANIFEST);
+const names = pkgs.map((p) => p.json.name).join(', ');
 const arg = process.argv[2];
 
 if (!arg) {
@@ -35,15 +36,20 @@ if (!arg) {
 
 if (arg === '--check') {
   const errors = [];
-  if (core.version !== server.version) {
-    errors.push(`version mismatch: @askskip/core=${core.version}, @askskip/server=${server.version}`);
-  }
-  if (manifest.version !== core.version) {
-    errors.push(`mj-app.json version "${manifest.version}" must match the package version "${core.version}"`);
-  }
-  const pin = server.dependencies?.['@askskip/core'];
-  if (pin !== core.version) {
-    errors.push(`@askskip/server depends on @askskip/core "${pin}" — must be the exact version "${core.version}" (no range)`);
+  const ref = manifest.version; // everything must match the manifest (the app's released version)
+  for (const { json } of pkgs) {
+    if (json.version !== ref) {
+      errors.push(`version mismatch: ${json.name}=${json.version} — must match mj-app.json "${ref}"`);
+    }
+    for (const section of DEP_SECTIONS) {
+      const deps = json[section];
+      if (!deps) continue;
+      for (const [name, spec] of Object.entries(deps)) {
+        if (internal.has(name) && spec !== ref) {
+          errors.push(`${json.name} ${section}["${name}"] = "${spec}" — must be the exact version "${ref}" (no range)`);
+        }
+      }
+    }
   }
   if (errors.length) {
     console.error('✖ lockstep check failed:');
@@ -51,7 +57,7 @@ if (arg === '--check') {
     console.error('  Fix with: npm run version:lockstep <version>');
     process.exit(1);
   }
-  console.log(`✓ lockstep OK — @askskip/core, @askskip/server, and mj-app.json all at ${core.version} (exact pin)`);
+  console.log(`✓ lockstep OK — ${pkgs.length} package(s) + mj-app.json all at ${ref} (exact internal pins): ${names}`);
   process.exit(0);
 }
 
@@ -61,12 +67,17 @@ if (!SEMVER.test(version)) {
   process.exit(2);
 }
 
-core.version = version;
-server.version = version;
-server.dependencies = server.dependencies ?? {};
-server.dependencies['@askskip/core'] = version; // exact pin — lockstep
+for (const { pkgPath, json } of pkgs) {
+  json.version = version;
+  for (const section of DEP_SECTIONS) {
+    const deps = json[section];
+    if (!deps) continue;
+    for (const name of Object.keys(deps)) {
+      if (internal.has(name)) deps[name] = version; // exact pin — lockstep
+    }
+  }
+  write(pkgPath, json);
+}
 manifest.version = version;
-write(CORE, core);
-write(SERVER, server);
 write(MANIFEST, manifest);
-console.log(`✓ set @askskip/core, @askskip/server, and mj-app.json to ${version} (server pins @askskip/core at exact ${version})`);
+console.log(`✓ set ${pkgs.length} package(s) + mj-app.json to ${version} (internal deps pinned exact): ${names}`);

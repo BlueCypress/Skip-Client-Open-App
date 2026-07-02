@@ -1,20 +1,23 @@
 {
   "name": "skip-client-open-app",
   "private": true,
-  "description": "Skip Client Open App — monorepo for the @askskip/server (runtime) and @askskip/core (config/records + install hooks) packages, plus the Open App manifest and migrations.",
+  "description": "Skip Client Open App — monorepo for the @askskip/server (runtime), @askskip/core (config/records + install hooks), and @askskip/types (shared Skip types) packages, plus the Open App manifest and migrations.",
   "license": "ISC",
   "repository": {
     "type": "git",
     "url": "https://github.com/BlueCypress/Skip-Client-Open-App"
   },
   "workspaces": [
+    "packages/types",
     "packages/core",
     "packages/server"
   ],
   "scripts": {
-    "build": "npm run build -w @askskip/core && npm run build -w @askskip/server",
+    "build": "npm run build --workspaces --if-present",
+    "watch:types": "npm run watch -w @askskip/types",
     "watch:core": "npm run watch -w @askskip/core",
     "watch:server": "npm run watch -w @askskip/server",
+    "list:packages": "node scripts/list-packages.mjs",
     "version:lockstep": "node scripts/lockstep-version.mjs",
     "check:lockstep": "node scripts/lockstep-version.mjs --check"
   }
