@@ -35,9 +35,9 @@
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
-    "@memberjunction/core": "5.44.0",
-    "@memberjunction/credentials": "5.44.0"
+  "peerDependencies": {
+    "@memberjunction/core": "^5.44.0",
+    "@memberjunction/credentials": "^5.44.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
