@@ -7,11 +7,18 @@ name: Release & publish to npm
 #     release tag, else PATCH.
 #   - bump = patch | minor | major: use that level explicitly (major is only ever manual).
 #
+# The next version is ANCHORED TO NPM, not to the files: scripts/plan-release.mjs takes the highest
+# version already published across the packages as the base, bumps that, and REFUSES TO RELEASE if
+# the files don't match (they must be at the base for a fresh release, or at the bumped version when
+# resuming a release whose publish step failed). So a wrong version left in the files can never cause
+# a jumped or skipped release — the run fails instead.
+#
 # The release commit is tagged and pushed back to main (marked [skip ci]). Publishing uses npm
 # trusted publishing (OIDC, no token); provenance is attached because the repo is public. Packages
 # are published in dependency order (declared "workspaces" order) so a dependency publishes before
 # any dependent. The package list is derived from the workspace, so new packages are included
-# automatically — no workflow edits needed.
+# automatically — no workflow edits needed. Commit/tag/publish are all idempotent, so re-running
+# after a partial failure safely completes the same version.
 #
 # Prereq: the workflow pushes a commit + tag to main, so the GitHub Actions token must be allowed
 # to push to main (if main is a protected branch, allow the actions bot to bypass, or swap in a
@@ -56,6 +63,11 @@ jobs:
       - name: Install workspace
         run: npm ci
 
+      # Guard the files are internally consistent (every package + manifest at one version, internal
+      # deps pinned exact) BEFORE we read the version to plan the release.
+      - name: Verify lockstep (files self-consistent)
+        run: npm run check:lockstep
+
       # Use the chosen bump, or (default "auto") detect it from what changed since the last
       # release tag: MINOR if migrations/, metadata/, or mj-app.json changed, else PATCH.
       - name: Determine bump level
@@ -82,13 +94,11 @@ jobs:
           fi
           echo "level=$LEVEL" >> "$GITHUB_OUTPUT"
 
-      - name: Compute next version
+      # Anchor the next version to what's PUBLISHED on npm and fail if the files disagree. This is
+      # what stops a wrong version in the files from jumping/skipping a release. Emits next/base/mode.
+      - name: Plan release (version anchored to npm; fails on mismatch)
         id: ver
-        run: |
-          CUR="$(node -p "require('./packages/core/package.json').version")"
-          NEXT="$(node -e "const [a,b,c]=process.argv[1].split('.').map(Number);const t=process.argv[2];console.log(t==='major'?(a+1)+'.0.0':t==='minor'?a+'.'+(b+1)+'.0':a+'.'+b+'.'+(c+1));" "$CUR" "${{ steps.bump.outputs.level }}")"
-          echo "current=$CUR  next=$NEXT  (${{ steps.bump.outputs.level }})"
-          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+        run: node scripts/plan-release.mjs "${{ steps.bump.outputs.level }}" >> "$GITHUB_OUTPUT"
 
       - name: Apply lockstep version bump
         run: |
@@ -100,16 +110,28 @@ jobs:
         run: npm run build
 
       # Commit + tag + push BEFORE publishing: if the push is rejected (e.g. branch protection),
-      # the run fails here and npm is never published, so git and npm never drift.
+      # the run fails here and npm is never published, so git and npm never drift. All steps are
+      # idempotent: on a resume run (mode=resume) the files are already at the target version, so
+      # there's nothing to commit and the tag already exists — we skip those and just publish.
       - name: Commit, tag, and push the release
         run: |
+          set -euo pipefail
+          NEXT="${{ steps.ver.outputs.next }}"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add packages/*/package.json mj-app.json package-lock.json
-          git commit -m "chore(release): v${{ steps.ver.outputs.next }} (${{ steps.bump.outputs.level }}) [skip ci]"
-          git tag "v${{ steps.ver.outputs.next }}"
-          git push origin HEAD:main
-          git push origin "v${{ steps.ver.outputs.next }}"
+          if git diff --cached --quiet; then
+            echo "No version changes to commit (mode=${{ steps.ver.outputs.mode }})."
+          else
+            git commit -m "chore(release): v$NEXT (${{ steps.bump.outputs.level }}) [skip ci]"
+            git push origin HEAD:main
+          fi
+          if git rev-parse -q --verify "refs/tags/v$NEXT" >/dev/null; then
+            echo "Tag v$NEXT already exists — reusing it."
+          else
+            git tag "v$NEXT"
+          fi
+          git push origin "v$NEXT"
 
       # No NODE_AUTH_TOKEN: the npm CLI authenticates as the configured trusted publisher via OIDC.
       # publishConfig.access=public publishes publicly; --provenance attaches a build attestation.

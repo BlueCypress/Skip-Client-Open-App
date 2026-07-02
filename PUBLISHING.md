@@ -35,7 +35,7 @@ automation works.
 | Workflow | File | Trigger | What it does |
 | --- | --- | --- | --- |
 | **CI** | `.github/workflows/ci.yml` | PRs touching `packages/**` | `npm ci` + **`npm run check:lockstep`** + `npm run build` (whole workspace, in dependency order). No registry auth needed — internal `@askskip/*` deps resolve to the local workspace, never the registry. |
-| **Release & publish** | `.github/workflows/publish.yml` | **Manual only** — Actions tab → Run workflow | Versions the app in lockstep (**`bump=auto`** → minor if `migrations/`/`metadata/`/`mj-app.json` changed since the last release tag, else patch; or pick patch/minor/major), bumps every package + internal pins + the manifest, commits the bump `[skip ci]`, tags `vX.Y.Z`, builds, and publishes every package (in dependency order) publicly via **trusted publishing (OIDC)** with provenance. |
+| **Release & publish** | `.github/workflows/publish.yml` | **Manual only** — Actions tab → Run workflow | Versions the app in lockstep (**`bump=auto`** → minor if `migrations/`/`metadata/`/`mj-app.json` changed since the last release tag, else patch; or pick patch/minor/major). The next version is **anchored to npm** (base = highest published version, bumped by the level) and the run **fails if the files don't match** (see [plan-release.mjs](scripts/plan-release.mjs)). It then sets every package + internal pins + the manifest, commits the bump `[skip ci]`, tags `vX.Y.Z`, builds, and publishes every package (in dependency order) publicly via **trusted publishing (OIDC)** with provenance. |
 
 The publish step **loops over every workspace package in dependency order** (from
 `node scripts/list-packages.mjs`), so a lockstep release publishes each dependency before its
@@ -136,11 +136,17 @@ Pick the **`bump`** input:
 The workflow then:
 
 1. Resolves the bump level (auto from the last-tag diff, or the level you picked).
-2. Runs `npm run version:lockstep <next>` — bumps every workspace package (+ exact internal pins) and
-   `mj-app.json` — and re-checks lockstep.
-3. Commits `chore(release): vX.Y.Z … [skip ci]`, tags `vX.Y.Z`, and pushes both to `main`.
-4. Publishes every package in dependency order publicly (with provenance). A package is a no-op if
-   that version is already on npm.
+2. **Plans the version against npm** (`scripts/plan-release.mjs`): the base is the highest version
+   already published across the packages, and the next version is that base bumped by the level. It
+   **refuses to release** unless the files are at the base (a fresh release) or already at the bumped
+   version (resuming a release whose publish failed) — so a wrong version in the files can't jump or
+   skip a release.
+3. Runs `npm run version:lockstep <next>` — sets every workspace package (+ exact internal pins) and
+   `mj-app.json` to the planned version — and re-checks lockstep.
+4. Commits `chore(release): vX.Y.Z … [skip ci]`, tags `vX.Y.Z`, and pushes to `main`. (On a resume
+   run there's nothing to commit and the tag already exists, so these are skipped.)
+5. Publishes every package in dependency order publicly (with provenance). A package is a no-op if
+   that version is already on npm — so re-running after a partial failure safely finishes the release.
 
 > **Don't bump versions inside a PR** — the release workflow owns versioning; branches stay at the
 > current released version. To bump locally for any reason, use `npm run version:lockstep <version>`
@@ -201,6 +207,9 @@ cd packages/server && npm pack --dry-run
 
 | Symptom | Cause / fix |
 | --- | --- |
+| Release fails at **Plan release** with "version mismatch — refusing to release" | The files' version isn't the base (highest published on npm) or the base bumped by your chosen level — usually a hand-edited version. Reconcile the files to the last released version with `npm run version:lockstep <version>`, then re-run. This guard is what prevents jumped/skipped releases. |
+| A release published some packages then failed | Re-run the same workflow with the same bump — it detects the files are already at the target version (**resume** mode), skips the commit/tag, and publishes only the packages not yet on npm. |
+| First-ever publish of a **new** package fails with `404 PUT .../<pkg>` | Trusted publishing (OIDC) can't create a package that doesn't exist yet. Do the one-time [manual bootstrap](#1-first-publish-manual-token-based) for that package, configure its trusted publisher, then re-run (resume mode finishes the release). |
 | Publish workflow ran but published nothing | Neither package's `package.json` version changed. Bump the one(s) you want to release. |
 | `npm error 403 ... you do not have permission` (CI) | Trusted publisher not configured for that package, or its repo/workflow fields don't match, or `npm publish` isn't an allowed action. Re-check [step 2](#2-configure-the-trusted-publisher-on-npmjscom-for-each-package); each package is configured separately; the workflow file must be `publish.yml`. |
 | Package accidentally published as **private/restricted** | `publishConfig.access` is `public` in every `package.json` — keep it, and don't pass `--access restricted`. To fix an already-restricted package, change its visibility in npm package settings (or `npm access public @askskip/<pkg>`). |
