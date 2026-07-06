@@ -8,12 +8,12 @@
 
 import { CredentialEngine } from '@memberjunction/credentials';
 import type { UserInfo } from '@memberjunction/core';
-import { DEFAULT_SKIP_BASE_URL } from './generated/default-endpoint.js';
 
-export { DEFAULT_SKIP_BASE_URL };
+/** Default Skip API base URL. Override with ASK_SKIP_CHAT_URL env var for non-production environments. */
+export const DEFAULT_SKIP_BASE_URL = 'https://brain-prod.askskip.ai';
 
-/** Default Skip chat endpoint derived from the baked-in base URL; undefined in builds without one. */
-export const DEFAULT_SKIP_CHAT_URL = DEFAULT_SKIP_BASE_URL ? `${DEFAULT_SKIP_BASE_URL}/chat` : undefined;
+/** Default Skip chat endpoint derived from the base URL. */
+export const DEFAULT_SKIP_CHAT_URL = `${DEFAULT_SKIP_BASE_URL}/chat`;
 
 /**
  * Configuration shape consumed by the Skip client SDK.
