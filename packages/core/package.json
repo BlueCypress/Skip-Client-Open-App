@@ -23,8 +23,8 @@
     "/dist"
   ],
   "scripts": {
-    "build": "node scripts/gen-default-endpoint.mjs && tsc",
-    "watch": "node scripts/gen-default-endpoint.mjs && tsc --watch"
+    "build": "tsc",
+    "watch": "tsc --watch"
   },
   "author": "BlueCypress",
   "license": "ISC",
