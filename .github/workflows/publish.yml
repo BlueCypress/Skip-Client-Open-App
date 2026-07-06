@@ -1,32 +1,22 @@
 name: Release & publish to npm
 
-# MANUAL release (NOT automatic on merge) — trigger from the Actions tab: "Release & publish" ->
-# "Run workflow". It versions the app in LOCKSTEP (every workspace package and mj-app.json all move
-# to one version), then tags and publishes every package:
-#   - bump = auto (default): MINOR if migrations/, metadata/, or mj-app.json changed since the last
-#     release tag, else PATCH.
+# Triggered automatically when next merges to main, or manually from the Actions tab.
+# Versions the app in LOCKSTEP (every workspace package and mj-app.json all move to one
+# version), then tags and publishes every package:
+#   - bump = auto (default): MINOR if migrations/, metadata/, or mj-app.json changed since
+#     the last release tag, else PATCH.
 #   - bump = patch | minor | major: use that level explicitly (major is only ever manual).
 #
-# The next version is ANCHORED TO NPM, not to the files: scripts/plan-release.mjs takes the highest
-# version already published across the packages as the base, bumps that, and REFUSES TO RELEASE if
-# the files don't match (they must be at the base for a fresh release, or at the bumped version when
-# resuming a release whose publish step failed). So a wrong version left in the files can never cause
+# The next version is ANCHORED TO NPM, not to the files: scripts/plan-release.mjs takes the
+# highest version already published across the packages as the base, bumps that, and REFUSES
+# TO RELEASE if the files don't match. So a wrong version left in the files can never cause
 # a jumped or skipped release — the run fails instead.
 #
-# The release commit is tagged and pushed back to main (marked [skip ci]). Publishing uses npm
-# trusted publishing (OIDC, no token); provenance is attached because the repo is public. Packages
-# are published in dependency order (declared "workspaces" order) so a dependency publishes before
-# any dependent. The package list is derived from the workspace, so new packages are included
-# automatically — no workflow edits needed. Commit/tag/publish are all idempotent, so re-running
-# after a partial failure safely completes the same version.
-#
-# Prereq: the workflow pushes a commit + tag to main, so the GitHub Actions token must be allowed
-# to push to main (if main is a protected branch, allow the actions bot to bypass, or swap in a
-# PAT / GitHub App token). It fails BEFORE publishing if the push is rejected, so npm never drifts
-# ahead of git.
+# After publishing, the release commit is merged back into next to keep the branches in sync.
 
 on:
-  # Manual only — releases are NOT triggered on merge. Run from the Actions tab.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       bump:
@@ -43,6 +33,8 @@ jobs:
   release:
     name: Release & publish
     runs-on: ubuntu-latest
+    # Skip release commits pushed by this workflow (they contain [skip ci] in the message)
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     permissions:
       contents: write # commit the version bump + push the release tag to main
       id-token: write # npm trusted publishing (OIDC) + provenance
@@ -73,7 +65,7 @@ jobs:
       - name: Determine bump level
         id: bump
         run: |
-          LEVEL="${{ github.event.inputs.bump }}"
+          LEVEL="${{ github.event.inputs.bump || 'auto' }}"
           if [ "$LEVEL" = "auto" ]; then
             LAST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -1 || true)"
             if [ -n "$LAST_TAG" ]; then
@@ -150,3 +142,13 @@ jobs:
               ( cd "$dir" && npm publish --provenance )
             fi
           done < <(node scripts/list-packages.mjs)
+
+      # Merge the release commit back to next so the branches stay in sync.
+      # Uses --no-ff to create a merge commit for traceability.
+      - name: Merge main back to next
+        run: |
+          set -euo pipefail
+          git fetch origin next
+          git checkout next
+          git merge main --no-ff -m "chore: merge main back to next after v${{ steps.ver.outputs.next }} release [skip ci]"
+          git push origin next
