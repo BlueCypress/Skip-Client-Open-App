@@ -8,7 +8,7 @@ A MemberJunction [Open App](https://github.com/MemberJunction/MJ) that installs 
 
 Before installing, ensure your MJ environment meets these requirements:
 
-1. **MJ version >= 5.44.0** — run `mj --version` to check
+1. **MJ version >= 5.45.0** — run `mj --version` to check
 2. **`MJ_BASE_ENCRYPTION_KEY`** set in your MJAPI environment — used to encrypt the stored Skip API key
    ```bash
    # Generate one if you don't have it:
@@ -17,7 +17,7 @@ Before installing, ensure your MJ environment meets these requirements:
 3. **Skip API key and organization ID** — provided by the Skip team during onboarding
 4. **`mj` CLI installed** — `npm install -g @memberjunction/cli`
 
-### Step 1: Configure your project layout
+### Step 1: Configure your project layout (if needed)
 
 If your MJAPI lives in `apps/MJAPI/` (instead of the default `packages/MJAPI/`), add this to your `mj.config.cjs`:
 
@@ -27,17 +27,6 @@ openApps: {
     clientPackagePath: 'apps/MJExplorer',
 },
 ```
-
-Also add a `dynamicPackages` section if your `mj.config.cjs` uses `module.exports = config;` (variable reference) instead of `module.exports = { ... }` (inline literal):
-
-```javascript
-dynamicPackages: {
-    server: [],
-    client: [],
-},
-```
-
-> **Important:** Add this to the `mj.config.cjs` that your **MJAPI actually loads** at startup. If you have a config file in both the repo root and `apps/MJAPI/`, the MJAPI uses the one in its own directory. Check the `Config` line in your MJAPI startup output to confirm which file is loaded.
 
 ### Step 2: Install the Open App
 
