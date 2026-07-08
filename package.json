@@ -19,6 +19,10 @@
     "watch:server": "npm run watch -w @askskip/server",
     "list:packages": "node scripts/list-packages.mjs",
     "version:lockstep": "node scripts/lockstep-version.mjs",
-    "check:lockstep": "node scripts/lockstep-version.mjs --check"
+    "check:lockstep": "node scripts/lockstep-version.mjs --check",
+    "mj:migrate:convert": "mj migrate convert --split --source-dir ./migrations --output-dir ./migrations-pg --schema skip_client"
+  },
+  "devDependencies": {
+    "@memberjunction/cli": "^5.44.0"
   }
 }

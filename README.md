@@ -19,9 +19,10 @@ It replaces the previous approach of baking Skip's agent code and security recor
   config/record helpers plus the in-process install (`setup`) / uninstall (`teardown`) hooks that the
   manifest references — and on **`@askskip/types`** (`packages/types`), the Skip request/response
   types shared with the Skip API (extracted from the former `@memberjunction/skip-types`).
-- **Skip identity records** (`migrations/`): a `Skip Service` role, a `Skip Service Account` user
-  (`skip-service@skip.internal`), its UI + Skip Service role links, and full CRUD permissions on the
-  MJ Query\* entity family — all written into the MJ core (`__mj`) schema via an idempotent migration.
+- **Skip identity records** (`migrations/`, with a PostgreSQL counterpart in `migrations-pg/`): a
+  `Skip Service` role, a `Skip Service Account` user (`skip-service@skip.internal`), its UI + Skip
+  Service role links, and full CRUD permissions on the MJ Query\* entity family — all written into
+  the MJ core (`__mj`) schema via an idempotent migration.
 - **Skip metadata records** (created by the in-process setup hook via the entity framework): the
   **"Skip" AI Agent** (`DriverClass=SkipProxyAgent` — this is what `@skip` resolves to) and the **"Skip"
   component registry** (`registry.askskip.ai`). These previously shipped in MJ core metadata to every
@@ -69,6 +70,26 @@ Remove runs the **in-process teardown** (`hooks.preRemoveModule`), which deletes
 records and any runtime-provisioned `Skip Callback:` API keys from `__mj` (FK-safe), then drops the
 `skip_client` schema. The generic MJ-core scopes/grants are intentionally left in place.
 
+## PostgreSQL support
+
+The migration is authored once, in SQL Server T-SQL, under `migrations/`. A hand-verified
+PostgreSQL counterpart lives in `migrations-pg/`. The Open App engine's `DownloadAppMigrations`
+(in `@memberjunction/open-app-engine`) is platform-aware: when `mj app install` targets a
+Postgres-backed MJ instance it downloads the sibling `migrations-pg/` folder instead of
+`migrations/`, falling back to `migrations/` only if no PG variant exists.
+
+To regenerate/verify the PostgreSQL migration after changing `migrations/`:
+
+```bash
+npm run mj:migrate:convert   # mj migrate convert --split --source-dir ./migrations --output-dir ./migrations-pg --schema skip_client
+```
+
+The converter transpiles the hand-written DDL/DML via its AST dialect and reports any statement it
+can't emit (via `migrations-pg/conversion-gaps.report.json` and inline comments in the output) —
+port those by hand in the same `DO $$ ... $$` idiom the converter already uses elsewhere in the
+file, verify against a real Postgres MJ-core instance (apply, then re-apply to confirm
+idempotency), and never hand-edit the parts the converter already produced correctly.
+
 ## Config / env vars
 
 | Env var | Purpose | Stored as |
@@ -83,7 +104,8 @@ records and any runtime-provisioned `Skip Callback:` API keys from `__mj` (FK-sa
 
 ```
 mj-app.json                         # Open App manifest
-migrations/                         # Skyway migration: Skip identity -> __mj
+migrations/                         # Skyway migration: Skip identity -> __mj (SQL Server)
+migrations-pg/                      # PostgreSQL counterpart, converted via `npm run mj:migrate:convert`
 packages/types/                     # @askskip/types — Skip request/response types (shared w/ Skip API)
 packages/core/                      # @askskip/core — shared config/records + install hooks
 packages/server/                    # @askskip/server — server runtime package
