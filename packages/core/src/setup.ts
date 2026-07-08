@@ -57,21 +57,13 @@ export default async function setup(payload: SkipHookPayload): Promise<void> {
 
     log('Configuring the Skip Client app...');
 
-    // Gather configuration — prompt interactively (pre-filled from env), else use env values.
-    // Skip's endpoints all hang off one base URL, so we prompt for the base (ASK_SKIP_URL) and
-    // derive the chat endpoint from it. The default is the existing ASK_SKIP_URL, or the base
-    // recovered from an existing ASK_SKIP_CHAT_URL so prior configs migrate cleanly.
-    const defaultBaseURL = process.env.ASK_SKIP_URL ?? baseFromChatURL(env.chatURL);
-    const baseURL = interactive
-        ? await cb!.OnPromptInput!('Skip API base URL (ASK_SKIP_URL)', { default: defaultBaseURL })
-        : defaultBaseURL;
+    // The only interactive prompt is the API key — everything else uses defaults or env vars.
+    // URL defaults to the production Skip API (baked into @askskip/core); org ID is set by
+    // the Skip team in the environment during onboarding.
+    const baseURL = process.env.ASK_SKIP_URL ?? baseFromChatURL(env.chatURL);
     const chatURL = baseURL ? joinURL(baseURL, 'chat') : env.chatURL;
-    const orgID = interactive
-        ? await cb!.OnPromptInput!('Skip organization ID (ASK_SKIP_ORGANIZATION_ID)', { default: env.orgID })
-        : env.orgID;
-    const orgInfo = interactive
-        ? await cb!.OnPromptInput!('Skip organization info (optional)', { default: env.organizationInfo ?? '' })
-        : env.organizationInfo;
+    const orgID = env.orgID;
+    const orgInfo = env.organizationInfo;
     const apiKey = interactive
         ? cb!.OnPromptPassword
             ? await cb!.OnPromptPassword('Skip API key (ASK_SKIP_API_KEY)')
