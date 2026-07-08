@@ -3,8 +3,8 @@ name: Release & publish to npm
 # Triggered automatically when next merges to main, or manually from the Actions tab.
 # Versions the app in LOCKSTEP (every workspace package and mj-app.json all move to one
 # version), then tags and publishes every package:
-#   - bump = auto (default): MINOR if migrations/, metadata/, or mj-app.json changed since
-#     the last release tag, else PATCH.
+#   - bump = auto (default): MINOR if migrations/, migrations-pg/, metadata/, or mj-app.json
+#     changed since the last release tag, else PATCH.
 #   - bump = patch | minor | major: use that level explicitly (major is only ever manual).
 #
 # The next version is ANCHORED TO NPM, not to the files: scripts/plan-release.mjs takes the
@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: 'Bump level — auto = minor if migrations/metadata/mj-app.json changed since last release, else patch'
+        description: 'Bump level — auto = minor if migrations/migrations-pg/metadata/mj-app.json changed since last release, else patch'
         type: choice
         options: [auto, patch, minor, major]
         default: auto
@@ -61,7 +61,7 @@ jobs:
         run: npm run check:lockstep
 
       # Use the chosen bump, or (default "auto") detect it from what changed since the last
-      # release tag: MINOR if migrations/, metadata/, or mj-app.json changed, else PATCH.
+      # release tag: MINOR if migrations/, migrations-pg/, metadata/, or mj-app.json changed, else PATCH.
       - name: Determine bump level
         id: bump
         run: |
@@ -71,7 +71,7 @@ jobs:
             if [ -n "$LAST_TAG" ]; then
               CHANGED="$(git diff --name-only "$LAST_TAG" HEAD)"
               echo "Changes since $LAST_TAG:"; echo "$CHANGED"
-              if echo "$CHANGED" | grep -qE '^(migrations/|metadata/|mj-app\.json$)'; then
+              if echo "$CHANGED" | grep -qE '^(migrations/|migrations-pg/|metadata/|mj-app\.json$)'; then
                 LEVEL="minor"
               else
                 LEVEL="patch"
@@ -80,7 +80,7 @@ jobs:
               echo "No prior v* release tag — defaulting to patch."
               LEVEL="patch"
             fi
-            echo "Auto-detected -> $LEVEL (migrations/metadata/manifest = minor, code = patch)"
+            echo "Auto-detected -> $LEVEL (migrations/migrations-pg/metadata/manifest = minor, code = patch)"
           else
             echo "Explicit bump -> $LEVEL"
           fi
