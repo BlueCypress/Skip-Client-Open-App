@@ -5,7 +5,12 @@ name: Release & publish to npm
 # and sync mj-app.json metadata. Changeset files (.changeset/*.md) created on feature
 # branches drive the bump level (patch/minor/major).
 #
-# After publishing, the release commit is merged back into next to keep the branches in sync.
+# The pipeline is atomic — every step runs unconditionally. If there are no pending
+# changesets, `changeset version` and `changeset publish` are no-ops, the commit/tag
+# step finds nothing to push, and the merge-back still runs. This prevents orphaned
+# states where main and next drift apart.
+#
+# Matches the MJ repo pattern: version → build → publish → commit+tag+push → merge back.
 
 on:
   push:
@@ -52,83 +57,61 @@ jobs:
           git config --global user.name "GitHub Actions"
           git remote set-url origin "https://$REPO_PAT@github.com/BlueCypress/Skip-Client-Open-App"
         env:
-          REPO_PAT: ${{ secrets.BC_GH_BOT_GITHUB_TOKEN }}
-
-      # Check for pending changesets. If none exist, there's nothing to release.
-      - name: Check for changesets
-        id: changesets
-        run: |
-          CHANGESET_COUNT=$(ls .changeset/*.md 2>/dev/null | grep -cv README.md || true)
-          echo "count=$CHANGESET_COUNT" >> "$GITHUB_OUTPUT"
-          if [ "$CHANGESET_COUNT" -eq 0 ]; then
-            echo "No pending changesets — nothing to release."
-          else
-            echo "Found $CHANGESET_COUNT pending changeset(s)."
-          fi
+          REPO_PAT: ${{ secrets.SKIP_CLIENT_GH_BOT_TOKEN }}
 
       # Apply changesets: bumps versions in all package.json files, writes CHANGELOG entries,
       # and deletes consumed .changeset/*.md files. The "fixed" config in .changeset/config.json
       # ensures all @askskip/* packages move in lockstep. "commit": true auto-commits the bump.
-      - name: Version packages (changeset version)
-        if: steps.changesets.outputs.count != '0'
+      # No-op if there are no pending changesets.
+      - name: Version packages
         run: npm run version
 
-      # Sync mj-app.json version from the just-bumped package version.
-      - name: Sync mj-app.json version
-        if: steps.changesets.outputs.count != '0'
+      # Sync mj-app.json version and mjVersionRange from the (possibly bumped) package versions.
+      - name: Sync mj-app.json
         run: |
           set -euo pipefail
           VERSION="$(jq -r .version packages/core/package.json)"
           jq --arg v "$VERSION" '.version = $v' mj-app.json > mj-app.tmp && mv mj-app.tmp mj-app.json
           echo "Updated mj-app.json version to $VERSION"
 
-      # Sync mjVersionRange in mj-app.json to match the @memberjunction/core peer dep.
-      # Same pattern as SaaS and bizapps-common: >=MIN <NEXT_MAJOR (e.g. >=5.45.1 <6.0.0).
-      - name: Sync mjVersionRange in mj-app.json
-        if: steps.changesets.outputs.count != '0'
-        run: |
-          set -euo pipefail
           MJ_RAW="$(jq -r '.peerDependencies["@memberjunction/core"]' packages/core/package.json)"
           MJ_MIN="$(echo "$MJ_RAW" | sed 's/^[^0-9]*//')"
           MJ_MAJOR="$(echo "$MJ_MIN" | cut -d. -f1)"
           MJ_NEXT_MAJOR="$(( MJ_MAJOR + 1 )).0.0"
           MJ_RANGE=">=${MJ_MIN} <${MJ_NEXT_MAJOR}"
-          echo "Setting mjVersionRange to: $MJ_RANGE (from @memberjunction/core $MJ_RAW)"
           jq --arg range "$MJ_RANGE" '.mjVersionRange = $range' mj-app.json > mj-app.tmp && mv mj-app.tmp mj-app.json
+          echo "Updated mj-app.json mjVersionRange to $MJ_RANGE"
 
-      - name: Build workspace (dependency order)
-        if: steps.changesets.outputs.count != '0'
+      - name: Build workspace
         run: npm run build
 
       # Publish to npm. Uses OIDC trusted publishing (NPM_TOKEN='' signals npm to use OIDC).
-      # Matching the MJ repo pattern: changeset publish handles dependency order and skips
-      # already-published versions.
+      # changeset publish handles dependency order and skips already-published versions.
+      # No-op if no versions were bumped.
       - name: Publish to npm
-        if: steps.changesets.outputs.count != '0'
         run: npx changeset publish
         env:
           NPM_TOKEN: ''
 
       # Get the version for tagging and commit message.
       - name: Get version string
-        if: steps.changesets.outputs.count != '0'
-        id: release
+        id: version
         run: |
           git pull
           VERSION="v$(jq -r .version packages/core/package.json)"
           echo "Release for version $VERSION" >> "$GITHUB_STEP_SUMMARY"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
 
-      # Commit version bump + mj-app.json sync, tag, and push.
-      # Done AFTER publish (matching MJ pattern) so the tag points to the released commit.
+      # Stage any post-version/post-build generated files (mj-app.json, CHANGELOGs, etc.),
+      # commit, tag, and push. Done AFTER publish so the tag points to the released commit.
+      # If nothing changed (no changesets consumed), the commit and tag are skipped gracefully.
       - name: Commit, tag, and push the release
-        if: steps.changesets.outputs.count != '0'
         run: |
           set -euo pipefail
-          VERSION="${{ steps.release.outputs.version }}"
+          VERSION="${{ steps.version.outputs.VERSION }}"
           git add -A
           if git diff --cached --quiet; then
-            echo "No changes to commit (changeset commit: true may have already committed)."
+            echo "No changes to commit — nothing was versioned."
           else
             git commit -m "chore(release): ${VERSION} [skip ci]"
           fi
@@ -139,12 +122,19 @@ jobs:
           fi
           git push origin HEAD:main --tags
 
-      # Merge the release commit back to next so the branches stay in sync.
+      # Merge main back into next and regenerate the lockfile so next stays in sync
+      # and CI doesn't fail on lockfile mismatches. Uses -X theirs to prevent merge
+      # conflicts on version-bumped files (matching MJ pattern).
       - name: Merge main back to next
-        if: steps.changesets.outputs.count != '0'
         run: |
           set -euo pipefail
           git fetch origin next
           git checkout next
-          git merge main --no-ff -m "chore: merge main back to next after ${{ steps.release.outputs.version }} release [skip ci]"
+          git merge -X theirs origin/main --no-ff -m "chore: merge main back to next after ${{ steps.version.outputs.VERSION }} release [skip ci]"
+          npm install --package-lock-only
+          LOCK_CHANGED="$(git status --porcelain package-lock.json)"
+          if [ -n "$LOCK_CHANGED" ]; then
+            git add package-lock.json
+            git commit -m "chore: update package-lock.json with ${{ steps.version.outputs.VERSION }} dependencies [skip ci]"
+          fi
           git push origin next

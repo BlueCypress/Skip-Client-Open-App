@@ -39,22 +39,9 @@ The installer will:
 2. Install `@askskip/server`, `@askskip/core`, and `@askskip/types` npm packages
 3. Add the `dynamicPackages.server` entry to `mj.config.cjs`
 4. Run the **interactive setup wizard**, which prompts for:
-   - **Skip API base URL** (`ASK_SKIP_URL`) — e.g., `https://brain-prod.askskip.ai`
    - **Skip API key** (`ASK_SKIP_API_KEY`) — stored encrypted in the MJ credential store
 
-### Step 3: Set environment variables
-
-After the setup wizard completes, add these to your MJAPI environment (`.env` file or hosting platform):
-
-```bash
-ASK_SKIP_URL=https://brain-prod.askskip.ai
-ASK_SKIP_CHAT_URL=https://brain-prod.askskip.ai/chat
-# ASK_SKIP_API_KEY is stored encrypted in the credential store by the setup wizard.
-# Set it here as a fallback only if the credential store is not available:
-# ASK_SKIP_API_KEY=skip-xxxxx
-```
-
-### Step 4: Restart MJAPI
+### Step 3: Restart MJAPI
 
 ```bash
 # Restart your MJAPI server
@@ -150,8 +137,6 @@ npm install
 
 | Env var | Required | Purpose |
 |---|:---:|---|
-| `ASK_SKIP_URL` | Yes | Skip API base URL (e.g., `https://brain-prod.askskip.ai`) |
-| `ASK_SKIP_CHAT_URL` | Yes | Skip chat endpoint (usually `${ASK_SKIP_URL}/chat`) |
 | `ASK_SKIP_API_KEY` | Yes* | Outbound API key sent to Skip (*stored encrypted by setup wizard; env is fallback) |
 | `MJ_BASE_ENCRYPTION_KEY` | Yes | Encrypts stored credentials (generate with `openssl rand -base64 32`) |
 | `GRAPHQL_BASE_URL` | No | MJAPI base URL for callbacks (default: `http://localhost`) |

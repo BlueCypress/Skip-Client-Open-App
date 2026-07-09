@@ -40,16 +40,6 @@ interface SkipHookPayload {
     Manifest: unknown;
 }
 
-/** Recover the Skip base URL from a chat URL by stripping a trailing "/chat". */
-function baseFromChatURL(chatURL: string | undefined): string | undefined {
-    return chatURL ? chatURL.replace(/\/+$/, '').replace(/\/chat$/i, '') : undefined;
-}
-
-/** Join a base URL and a path segment with exactly one separating slash. */
-function joinURL(base: string, segment: string): string {
-    return `${base.replace(/\/+$/, '')}/${segment}`;
-}
-
 export default async function setup(payload: SkipHookPayload): Promise<void> {
     const cb = payload.Callbacks;
     const contextUser = payload.ContextUser as UserInfo;
@@ -60,9 +50,7 @@ export default async function setup(payload: SkipHookPayload): Promise<void> {
     log('Configuring the Skip Client app...');
 
     // The only interactive prompt is the API key — everything else uses defaults or env vars.
-    // URL defaults to the production Skip API (baked into @askskip/core).
-    const baseURL = process.env.ASK_SKIP_URL ?? baseFromChatURL(env.chatURL);
-    const chatURL = baseURL ? joinURL(baseURL, 'chat') : env.chatURL;
+    // The Skip base URL defaults to production (baked into @askskip/core); override via ASK_SKIP_URL.
     const apiKey = interactive
         ? cb!.OnPromptPassword
             ? await cb!.OnPromptPassword('Skip API key (ASK_SKIP_API_KEY)')
@@ -103,13 +91,6 @@ export default async function setup(payload: SkipHookPayload): Promise<void> {
     } else {
         log('No Skip API key provided; set ASK_SKIP_API_KEY in the MJAPI environment before first use.');
     }
-
-    // Non-secret settings are read from the environment by the SDK (getSkipConfig). Report
-    // them so the operator can persist them as MJAPI env vars.
-    log('Skip Client configuration summary — set these as MJAPI environment variables, then restart MJAPI:');
-    log(`  ASK_SKIP_URL=${baseURL ?? '(unset)'}`);
-    log(`  ASK_SKIP_CHAT_URL=${chatURL ?? '(unset)'}`);
-    log('  (Organization is identified automatically via your Skip API key.)');
 
     // Offer to create skip.config.cjs with entity-filtering defaults
     await maybeCreateSkipConfigFile(payload.RepoRoot, interactive, cb, log);

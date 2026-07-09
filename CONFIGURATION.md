@@ -10,9 +10,7 @@ Set these in your MJAPI environment (`.env` file or hosting platform).
 
 | Variable | Purpose |
 |---|---|
-| `ASK_SKIP_URL` | Skip API base URL (e.g., `https://brain-prod.askskip.ai`) |
-| `ASK_SKIP_CHAT_URL` | Skip chat endpoint (usually `${ASK_SKIP_URL}/chat`). Defaults to `https://brain-prod.askskip.ai/chat` if unset. |
-| `ASK_SKIP_API_KEY` | Outbound API key for authenticating with the Skip API. Preferably stored encrypted via the setup wizard; env var is a fallback. |
+| `ASK_SKIP_API_KEY` | Outbound API key for authenticating with the Skip API. Stored encrypted by the setup wizard; env var is a fallback. |
 | `MJ_BASE_ENCRYPTION_KEY` | Encryption key for the MJ credential store. Generate with `openssl rand -base64 32`. |
 
 Organization identification is handled automatically via the Skip API key -- no separate org ID or info variables are needed.
@@ -21,6 +19,7 @@ Organization identification is handled automatically via the Skip API key -- no 
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `ASK_SKIP_URL` | `https://brain-prod.askskip.ai` | Skip API base URL. Only set this when pointing at a non-production Skip instance. The `/chat` and `/eval/*` endpoints are derived automatically. |
 | `GRAPHQL_BASE_URL` | `http://localhost` | MJAPI base URL used to construct the callback URL that Skip Brain calls back to. |
 | `MJAPI_PUBLIC_URL` | _(none)_ | Public-facing callback URL. When set, takes precedence over `GRAPHQL_BASE_URL:GRAPHQL_PORT`. Use this when MJAPI is behind a reverse proxy or tunnel (e.g., ngrok). |
 | `GRAPHQL_PORT` | `4000` | MJAPI port, appended to `GRAPHQL_BASE_URL` when `MJAPI_PUBLIC_URL` is not set. |
