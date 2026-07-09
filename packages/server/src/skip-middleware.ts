@@ -5,8 +5,7 @@
  * MJServer's serve() at boot (after the DB pool, Metadata, UserCache and APIKeyEngine
  * are ready, and before the GraphQL schema is built / any agent runs). Its Initialize()
  * verifies that the scoped-callback prerequisites this app deploys are actually present
- * on the instance — so a misconfigured install fails loud rather than silently falling
- * back to the unrestricted MJ_API_KEY callback path.
+ * on the instance — so a misconfigured install fails loud rather than silently degrading.
  *
  * Importing this module also pulls in skip-agent.js, triggering the
  * `@RegisterClass(BaseAgent, 'SkipProxyAgent')` registration.
@@ -14,10 +13,12 @@
 import { RegisterClass } from '@memberjunction/global';
 import { BaseServerMiddleware } from '@memberjunction/server';
 import { LogStatus, LogError, Metadata } from '@memberjunction/core';
-import type { IMetadataProvider } from '@memberjunction/core';
+import type { IMetadataProvider, UserInfo } from '@memberjunction/core';
+import type { Application, Request, Response } from 'express';
 import { GetAPIKeyEngine } from '@memberjunction/api-keys';
 import { UserCache } from '@memberjunction/sqlserver-dataprovider';
 import { ensureSkipRecords } from '@askskip/core';
+import { SkipSDK } from './skip-sdk.js';
 
 // Side-effect import: ensure SkipProxyAgent's @RegisterClass(BaseAgent, 'SkipProxyAgent') runs.
 import './skip-agent.js';
@@ -66,8 +67,8 @@ export class SkipMiddleware extends BaseServerMiddleware {
             if (!serviceAccount) {
                 LogError(
                     `[skip-client] Skip Service Account (${SKIP_SERVICE_EMAIL}) not found in the user cache. ` +
-                    `The Skip Client app's install migration should have created it. Skip callbacks will fall back ` +
-                    `to the legacy MJ_API_KEY until this is resolved.`,
+                    `The Skip Client app's install migration should have created it. ` +
+                    `Scoped callback key provisioning will fail until this is resolved.`,
                 );
             }
             if (missingScopes.length) {
@@ -95,6 +96,80 @@ export class SkipMiddleware extends BaseServerMiddleware {
         } catch (e) {
             LogError(`[skip-client] Middleware Initialize() warning: ${e instanceof Error ? e.message : String(e)}`);
         }
+    }
+
+    /**
+     * Register Skip eval proxy endpoints on the Express app.
+     * These let the eval CLI runner trigger eval runs through the client MJAPI
+     * (which handles entity/query metadata and scoped callback auth) without
+     * needing direct database credentials.
+     */
+    ConfigureExpressApp(app: Application): void {
+        app.post('/eval/run', async (req: Request, res: Response) => {
+            try {
+                const userRecord = (req as unknown as Record<string, unknown>)['mjUser'] as UserInfo | undefined;
+                if (!userRecord) {
+                    res.status(401).json({ success: false, error: 'Authentication required' });
+                    return;
+                }
+
+                const { agentName, agentPayload, optimalOutput, scoring } = req.body;
+                if (!agentName || !agentPayload || !optimalOutput || !scoring) {
+                    res.status(400).json({ success: false, error: 'Missing required fields: agentName, agentPayload, optimalOutput, scoring' });
+                    return;
+                }
+
+                const sdk = new SkipSDK();
+                const dataSources = (req as unknown as Record<string, unknown>)['dataSources'] as Array<{ dataSource: unknown }> | undefined;
+                const result = await sdk.evalRunAgent({
+                    agentName,
+                    agentPayload,
+                    optimalOutput,
+                    scoring,
+                    contextUser: userRecord,
+                    dataSource: dataSources?.[0]?.dataSource as import('mssql').ConnectionPool,
+                });
+
+                res.json(result);
+            } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error);
+                LogError(`[skip-client/eval] Error: ${msg}`);
+                res.status(500).json({ success: false, error: msg });
+            }
+        });
+
+        app.post('/eval/run-prompt', async (req: Request, res: Response) => {
+            try {
+                const userRecord = (req as unknown as Record<string, unknown>)['mjUser'] as UserInfo | undefined;
+                if (!userRecord) {
+                    res.status(401).json({ success: false, error: 'Authentication required' });
+                    return;
+                }
+
+                const { promptName, promptData, optimalOutput, scoring } = req.body;
+                if (!promptName || !promptData || !optimalOutput || !scoring) {
+                    res.status(400).json({ success: false, error: 'Missing required fields: promptName, promptData, optimalOutput, scoring' });
+                    return;
+                }
+
+                const sdk = new SkipSDK();
+                const result = await sdk.evalRunPrompt({
+                    promptName,
+                    promptData,
+                    optimalOutput,
+                    scoring,
+                    contextUser: userRecord,
+                });
+
+                res.json(result);
+            } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error);
+                LogError(`[skip-client/eval] Prompt eval error: ${msg}`);
+                res.status(500).json({ success: false, error: msg });
+            }
+        });
+
+        LogStatus('[skip-client] Registered /eval/run and /eval/run-prompt endpoints.');
     }
 
     /** No Skip-specific GraphQL resolvers today; reserved for future client-side Skip endpoints. */

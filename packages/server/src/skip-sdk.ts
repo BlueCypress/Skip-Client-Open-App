@@ -30,7 +30,7 @@ import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { gzip as gzipCompress, createGunzip } from 'zlib';
 import { getSkipConfig, getDbType, resolveSkipApiKey } from '@askskip/core';
-import { getSkipCallbackKey, provisioningComplete as skipKeyProvisioned } from './skip-callback-key-provisioner.js';
+import { getSkipCallbackKey } from './skip-callback-key-provisioner.js';
 import { GetAIAPIKey } from '@memberjunction/ai';
 import { AIEngine } from '@memberjunction/aiengine';
 import { CopyScalarsAndArrays, UUIDsEqual } from '@memberjunction/global';
@@ -51,16 +51,6 @@ export interface SkipSDKConfig {
      * Skip API key for authentication
      */
     apiKey?: string;
-
-    /**
-     * Organization ID
-     */
-    organizationId?: string;
-
-    /**
-     * Optional organization context information
-     */
-    organizationInfo?: string;
 
     /**
      * Optional metadata provider this SDK instance binds to. When set, every metadata
@@ -188,6 +178,47 @@ export interface SkipCallResult {
 }
 
 /**
+ * Options for triggering an eval run on the Skip API.
+ */
+export interface SkipEvalOptions {
+    agentName: string;
+    agentPayload: Record<string, unknown>;
+    optimalOutput: Record<string, unknown>;
+    scoring: Record<string, unknown>;
+    contextUser: UserInfo;
+    dataSource: mssql.ConnectionPool;
+    provider?: IMetadataProvider;
+}
+
+/**
+ * Options for running a standalone prompt eval (no agent execution).
+ */
+export interface SkipEvalPromptOptions {
+    promptName: string;
+    promptData: Record<string, unknown>;
+    optimalOutput: Record<string, unknown>;
+    scoring: Record<string, unknown>;
+    contextUser: UserInfo;
+    provider?: IMetadataProvider;
+}
+
+/**
+ * Result from an eval run.
+ */
+export interface SkipEvalResult {
+    success: boolean;
+    agentRunID?: string;
+    executionTimeMs?: number;
+    payload?: Record<string, unknown>;
+    evidence?: Record<string, unknown>;
+    scores?: {
+        dimensions: Record<string, { score: number | string; justification: string }>;
+        weightedScore: number;
+    };
+    error?: string;
+}
+
+/**
  * Shape of a single SSE event received from the Skip API stream.
  * Skip sends two formats:
  * - Wrapped: `{type: 'status_update'|'streaming'|'complete', value: SkipAPIResponse}`
@@ -231,8 +262,6 @@ export class SkipSDK {
         this.config = {
             apiUrl: config?.apiUrl || skipConfig.chatURL,
             apiKey: config?.apiKey || skipConfig.apiKey,
-            organizationId: config?.organizationId || skipConfig.orgID,
-            organizationInfo: config?.organizationInfo || skipConfig.organizationInfo
         };
     }
 
@@ -397,12 +426,9 @@ export class SkipSDK {
             notes: baseRequest.notes,
             noteTypes: baseRequest.noteTypes,
             userEmail: baseRequest.userEmail,
-            organizationID: baseRequest.organizationID,
-            organizationInfo: baseRequest.organizationInfo,
             apiKeys: baseRequest.apiKeys,
             callingServerURL: baseRequest.callingServerURL,
             callingServerAPIKey: baseRequest.callingServerAPIKey,
-            callingServerAccessToken: baseRequest.callingServerAccessToken,
             externalReferenceID,
             databasePlatform: getDbType()
         };
@@ -447,12 +473,8 @@ export class SkipSDK {
             if (newlyCreatedKey) {
                 // First time: send raw key so Skip can persist it
                 callingServerAPIKey = newlyCreatedKey;
-            } else if (!skipKeyProvisioned && skipConfig.legacyCallbackAPIKey) {
-                // Provisioning failed (missing service account, scopes, etc.)
-                // Fall back to legacy MJ_API_KEY during transition period
-                callingServerAPIKey = skipConfig.legacyCallbackAPIKey;
             }
-            // else: skipKeyProvisioned=true, key exists in DB, Skip already has it — omit callingServerAPIKey
+            // else: provisioningComplete=true, key exists in DB, Skip already has it — omit callingServerAPIKey
         }
 
         return {
@@ -462,12 +484,9 @@ export class SkipSDK {
             notes,
             noteTypes,
             userEmail: contextUser.Email,
-            organizationID: this.config.organizationId,
-            organizationInfo: this.config.organizationInfo,
             apiKeys: this.buildAPIKeys(),
             callingServerURL,
             callingServerAPIKey,
-            callingServerAccessToken: undefined
         };
     }
 
@@ -1207,6 +1226,120 @@ export class SkipSDK {
             reflectionInsights: msg.reflectionInsights ?? null,
             summaryOfEarlierConveration: msg.summaryOfEarlierConveration ?? null
         }));
+    }
+
+    /**
+     * Trigger an eval run on the Skip API.
+     *
+     * Builds the same entity/query/auth context as chat(), but sends to the
+     * /eval/run-agent endpoint with eval-specific fields (fixture, optimal, scoring).
+     * Uses a standard JSON request/response (no SSE streaming).
+     */
+    async evalRunAgent(options: SkipEvalOptions): Promise<SkipEvalResult> {
+        const evalUrl = this.getEvalUrl('run-agent');
+        LogStatus(`[SkipSDK] Sending eval run to: ${evalUrl}`);
+
+        try {
+            if (options.provider) {
+                this.Provider = options.provider;
+            }
+
+            const baseRequest = await this.buildBaseRequest(
+                options.contextUser,
+                options.dataSource,
+                true,   // includeEntities
+                true,   // includeQueries
+                false,  // includeNotes
+                false,  // includeRequests
+                false,  // forceEntityRefresh
+                true,   // includeCallbackAuth
+            );
+
+            const evalRequest = {
+                agentName: options.agentName,
+                agentPayload: options.agentPayload,
+                optimalOutput: options.optimalOutput,
+                scoring: options.scoring,
+                entityCatalog: baseRequest.entities || [],
+                queryCatalog: baseRequest.queries || [],
+                connection: {
+                    callingServerURL: baseRequest.callingServerURL,
+                    callingServerAPIKey: baseRequest.callingServerAPIKey,
+                },
+            };
+
+            const response = await fetch(evalUrl, {
+                method: 'POST',
+                headers: this.buildHeaders(),
+                body: JSON.stringify(evalRequest),
+            });
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Skip eval API returned ${response.status}: ${text.slice(0, 500)}`);
+            }
+
+            return await response.json() as SkipEvalResult;
+        } catch (error) {
+            LogError(`[SkipSDK] Eval run error: ${error}`);
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+            };
+        }
+    }
+
+    /**
+     * Trigger a standalone prompt eval on the Skip API.
+     *
+     * Unlike evalRunAgent(), this doesn't need entity/query catalogs or agent execution.
+     * Sends prompt data directly to the /eval/run-prompt endpoint for execution and scoring.
+     */
+    async evalRunPrompt(options: SkipEvalPromptOptions): Promise<SkipEvalResult> {
+        const evalUrl = this.getEvalUrl('run-prompt');
+        LogStatus(`[SkipSDK] Sending prompt eval to: ${evalUrl}`);
+
+        try {
+            if (options.provider) {
+                this.Provider = options.provider;
+            }
+
+            const evalRequest = {
+                promptName: options.promptName,
+                promptData: options.promptData,
+                optimalOutput: options.optimalOutput,
+                scoring: options.scoring,
+            };
+
+            const response = await fetch(evalUrl, {
+                method: 'POST',
+                headers: this.buildHeaders(),
+                body: JSON.stringify(evalRequest),
+            });
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Skip prompt eval API returned ${response.status}: ${text.slice(0, 500)}`);
+            }
+
+            return await response.json() as SkipEvalResult;
+        } catch (error) {
+            LogError(`[SkipSDK] Prompt eval error: ${error}`);
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+            };
+        }
+    }
+
+    /**
+     * Derive an eval endpoint URL from the chat URL.
+     * chatURL: "https://brain-prod.askskip.ai/chat" → "https://brain-prod.askskip.ai/eval/run-agent"
+     */
+    private getEvalUrl(path: string): string {
+        const chatUrl = this.config.apiUrl || '';
+        const baseUrl = chatUrl.replace(/\/chat\/?$/, '');
+        return `${baseUrl}/eval/${path}`;
     }
 
     /**

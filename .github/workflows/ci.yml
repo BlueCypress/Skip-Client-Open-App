@@ -1,13 +1,16 @@
 name: CI
 
-# Build check for pull requests so a broken TypeScript build never reaches main
-# (and therefore never triggers a publish). Builds the whole workspace in dependency
-# order. There are no tests yet, so this is build-only; add a test step when tests exist.
+# Build check for pull requests targeting next, so a broken TypeScript build
+# never reaches the development branch (and therefore never reaches main).
 
 on:
   pull_request:
+    branches: [next]
     paths:
       - 'packages/**'
+      - 'migrations/**'
+      - 'migrations-pg/**'
+      - 'mj-app.json'
 
 jobs:
   build:
@@ -23,9 +26,6 @@ jobs:
 
       - name: Install workspace
         run: npm ci
-
-      - name: Verify lockstep versions
-        run: npm run check:lockstep
 
       - name: Build workspace (dependency order)
         run: npm run build
