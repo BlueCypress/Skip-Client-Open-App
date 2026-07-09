@@ -19,10 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: 24
           cache: npm
+          cache-dependency-path: 'package-lock.json'
+
+      - name: Pin npm version
+        run: npm install -g npm@11.6.4
 
       - name: Install workspace
         run: npm ci
