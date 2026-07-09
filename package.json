@@ -13,6 +13,8 @@
     "packages/server"
   ],
   "scripts": {
+    "change": "changeset",
+    "version": "changeset version",
     "build": "npm run build --workspaces --if-present",
     "watch:types": "npm run watch -w @askskip/types",
     "watch:core": "npm run watch -w @askskip/core",
@@ -23,6 +25,7 @@
     "mj:migrate:convert": "mj migrate convert --split --source-dir ./migrations --output-dir ./migrations-pg --schema skip_client"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.0",
     "@memberjunction/cli": "^5.45.1"
   }
 }
