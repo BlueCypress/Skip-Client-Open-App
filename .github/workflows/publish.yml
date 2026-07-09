@@ -12,6 +12,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+  id-token: write
+
 concurrency:
   group: release-askskip
   cancel-in-progress: false
@@ -22,25 +26,33 @@ jobs:
     runs-on: ubuntu-latest
     # Skip release commits pushed by this workflow (they contain [skip ci] in the message)
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
-    permissions:
-      contents: write # commit the version bump + push the release tag to main
-      id-token: write # npm trusted publishing (OIDC) + provenance
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0
+          fetch-tags: true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: '22' # >= 22.14.0 required by trusted publishing
+          node-version: 24
           registry-url: 'https://registry.npmjs.org'
           cache: npm
+          cache-dependency-path: 'package-lock.json'
 
-      - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@latest # trusted publishing requires npm >= 11.5.1
+      - name: Pin npm version
+        run: npm install -g npm@11.6.4
 
       - name: Install workspace
         run: npm ci
+
+      - name: Set up git credentials
+        run: |
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "GitHub Actions"
+          git remote set-url origin "https://$REPO_PAT@github.com/BlueCypress/Skip-Client-Open-App"
+        env:
+          REPO_PAT: ${{ secrets.BC_GH_BOT_GITHUB_TOKEN }}
 
       # Check for pending changesets. If none exist, there's nothing to release.
       - name: Check for changesets
@@ -56,7 +68,7 @@ jobs:
 
       # Apply changesets: bumps versions in all package.json files, writes CHANGELOG entries,
       # and deletes consumed .changeset/*.md files. The "fixed" config in .changeset/config.json
-      # ensures all @askskip/* packages move in lockstep.
+      # ensures all @askskip/* packages move in lockstep. "commit": true auto-commits the bump.
       - name: Version packages (changeset version)
         if: steps.changesets.outputs.count != '0'
         run: npm run version
@@ -88,46 +100,51 @@ jobs:
         if: steps.changesets.outputs.count != '0'
         run: npm run build
 
-      # Commit + tag + push BEFORE publishing so git and npm never drift.
-      - name: Commit, tag, and push the release
-        if: steps.changesets.outputs.count != '0'
-        id: release
-        run: |
-          set -euo pipefail
-          VERSION="$(jq -r .version packages/core/package.json)"
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "chore(release): v${VERSION} [skip ci]"
-            git push origin HEAD:main
-          fi
-          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
-            echo "Tag v${VERSION} already exists — reusing it."
-          else
-            git tag "v${VERSION}"
-          fi
-          git push origin "v${VERSION}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      # Publish via changeset publish. Uses OIDC trusted publishing (no NODE_AUTH_TOKEN needed).
-      # publishConfig.access=public in each package.json ensures public visibility.
-      # --no-git-tag prevents changeset from creating its own tags (we already did above).
-      - name: Publish packages
+      # Publish to npm. Uses OIDC trusted publishing (NPM_TOKEN='' signals npm to use OIDC).
+      # Matching the MJ repo pattern: changeset publish handles dependency order and skips
+      # already-published versions.
+      - name: Publish to npm
         if: steps.changesets.outputs.count != '0'
         run: npx changeset publish
         env:
-          NODE_AUTH_TOKEN: '' # OIDC handles auth; explicit empty prevents changeset from erroring
+          NPM_TOKEN: ''
+
+      # Get the version for tagging and commit message.
+      - name: Get version string
+        if: steps.changesets.outputs.count != '0'
+        id: release
+        run: |
+          git pull
+          VERSION="v$(jq -r .version packages/core/package.json)"
+          echo "Release for version $VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Commit version bump + mj-app.json sync, tag, and push.
+      # Done AFTER publish (matching MJ pattern) so the tag points to the released commit.
+      - name: Commit, tag, and push the release
+        if: steps.changesets.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.release.outputs.version }}"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit (changeset commit: true may have already committed)."
+          else
+            git commit -m "chore(release): ${VERSION} [skip ci]"
+          fi
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "Tag ${VERSION} already exists — reusing it."
+          else
+            git tag "${VERSION}"
+          fi
+          git push origin HEAD:main --tags
 
       # Merge the release commit back to next so the branches stay in sync.
-      # Uses --no-ff to create a merge commit for traceability.
       - name: Merge main back to next
         if: steps.changesets.outputs.count != '0'
         run: |
           set -euo pipefail
           git fetch origin next
           git checkout next
-          git merge main --no-ff -m "chore: merge main back to next after v${{ steps.release.outputs.version }} release [skip ci]"
+          git merge main --no-ff -m "chore: merge main back to next after ${{ steps.release.outputs.version }} release [skip ci]"
           git push origin next
