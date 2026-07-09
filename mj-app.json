@@ -11,7 +11,7 @@
     "name": "BlueCypress"
   },
   "repository": "https://github.com/BlueCypress/Skip-Client-Open-App",
-  "mjVersionRange": ">=5.41.0",
+  "mjVersionRange": ">=5.45.1 <6.0.0",
   "schema": {
     "name": "skip_client",
     "createIfNotExists": true
@@ -43,16 +43,6 @@
           "title": "Skip API key",
           "format": "password",
           "description": "ASK_SKIP_API_KEY — outbound key sent to the Skip API. Stored encrypted in the MJ credential store."
-        },
-        "organizationID": {
-          "type": "string",
-          "title": "Skip organization ID",
-          "description": "ASK_SKIP_ORGANIZATION_ID."
-        },
-        "organizationInfo": {
-          "type": "string",
-          "title": "Skip organization info",
-          "description": "ASK_SKIP_ORGANIZATION_INFO (optional)."
         }
       },
       "required": [
