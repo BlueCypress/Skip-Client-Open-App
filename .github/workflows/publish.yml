@@ -139,12 +139,13 @@ jobs:
           fi
           git push origin HEAD:main --tags
 
-      # Merge the release commit back to next so the branches stay in sync.
+      # Always merge main back to next so the branches stay in sync — even when
+      # there are no changesets (e.g. a re-run after the changeset was already consumed).
       - name: Merge main back to next
-        if: steps.changesets.outputs.count != '0'
         run: |
           set -euo pipefail
           git fetch origin next
           git checkout next
-          git merge main --no-ff -m "chore: merge main back to next after ${{ steps.release.outputs.version }} release [skip ci]"
+          VERSION="${{ steps.release.outputs.version || 'sync' }}"
+          git merge main --no-ff -m "chore: merge main back to next after ${VERSION} release [skip ci]"
           git push origin next
