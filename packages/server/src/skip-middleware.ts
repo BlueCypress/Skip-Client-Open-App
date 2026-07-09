@@ -14,10 +14,11 @@ import { RegisterClass } from '@memberjunction/global';
 import { BaseServerMiddleware } from '@memberjunction/server';
 import { LogStatus, LogError, Metadata } from '@memberjunction/core';
 import type { IMetadataProvider, UserInfo } from '@memberjunction/core';
-import type { Application, Request, Response } from 'express';
+import type { Application, Request, Response, RequestHandler } from 'express';
+import { Router, json as jsonBodyParser } from 'express';
 import { GetAPIKeyEngine } from '@memberjunction/api-keys';
 import { UserCache } from '@memberjunction/sqlserver-dataprovider';
-import { ensureSkipRecords } from '@askskip/core';
+import { ensureSkipRecords, getSkipConfig } from '@askskip/core';
 import { SkipSDK } from './skip-sdk.js';
 
 // Side-effect import: ensure SkipProxyAgent's @RegisterClass(BaseAgent, 'SkipProxyAgent') runs.
@@ -99,13 +100,24 @@ export class SkipMiddleware extends BaseServerMiddleware {
     }
 
     /**
-     * Register Skip eval proxy endpoints on the Express app.
-     * These let the eval CLI runner trigger eval runs through the client MJAPI
-     * (which handles entity/query metadata and scoped callback auth) without
-     * needing direct database credentials.
+     * Register Skip eval proxy endpoints as post-auth middleware.
+     *
+     * Only enabled when `enableEval: true` is set in `skip.config.cjs`. This
+     * ensures eval endpoints are not exposed on production client environments.
+     * Only eval-target environments (e.g. More Cheese staging) opt in.
+     *
+     * Routes run AFTER the unified auth middleware so `req['mjUser']` is populated.
      */
-    ConfigureExpressApp(app: Application): void {
-        app.post('/eval/run', async (req: Request, res: Response) => {
+    GetPostAuthMiddleware(): RequestHandler[] {
+        const config = getSkipConfig();
+        if (!config.enableEval) {
+            return [];
+        }
+
+        const evalRouter = Router();
+        evalRouter.use(jsonBodyParser({ limit: '50mb' }));
+
+        evalRouter.post('/eval/run', async (req: Request, res: Response) => {
             try {
                 const userRecord = (req as unknown as Record<string, unknown>)['mjUser'] as UserInfo | undefined;
                 if (!userRecord) {
@@ -138,7 +150,7 @@ export class SkipMiddleware extends BaseServerMiddleware {
             }
         });
 
-        app.post('/eval/run-prompt', async (req: Request, res: Response) => {
+        evalRouter.post('/eval/run-prompt', async (req: Request, res: Response) => {
             try {
                 const userRecord = (req as unknown as Record<string, unknown>)['mjUser'] as UserInfo | undefined;
                 if (!userRecord) {
@@ -169,7 +181,8 @@ export class SkipMiddleware extends BaseServerMiddleware {
             }
         });
 
-        LogStatus('[skip-client] Registered /eval/run and /eval/run-prompt endpoints.');
+        LogStatus('[skip-client] Registered /eval/run and /eval/run-prompt endpoints (post-auth).');
+        return [evalRouter as unknown as RequestHandler];
     }
 
     /** No Skip-specific GraphQL resolvers today; reserved for future client-side Skip endpoints. */
