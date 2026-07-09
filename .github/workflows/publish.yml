@@ -112,14 +112,23 @@ jobs:
           git push origin "v${VERSION}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      # Publish via changeset publish. Uses OIDC trusted publishing (no NODE_AUTH_TOKEN needed).
-      # publishConfig.access=public in each package.json ensures public visibility.
-      # --no-git-tag prevents changeset from creating its own tags (we already did above).
-      - name: Publish packages
+      # Publish each workspace package directly via npm publish --provenance (OIDC).
+      # changeset publish doesn't support OIDC trusted publishing (missing sigstore module),
+      # so we publish manually in workspace (dependency) order, skipping already-published versions.
+      - name: Publish packages (dependency order, OIDC + provenance)
         if: steps.changesets.outputs.count != '0'
-        run: npx changeset publish
-        env:
-          NODE_AUTH_TOKEN: '' # OIDC handles auth; explicit empty prevents changeset from erroring
+        run: |
+          set -euo pipefail
+          for dir in packages/types packages/core packages/server; do
+            name="$(jq -r .name "$dir/package.json")"
+            version="$(jq -r .version "$dir/package.json")"
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "::notice::$name@$version already on npm — skipping."
+            else
+              echo "Publishing $name@$version from $dir"
+              ( cd "$dir" && npm publish --provenance )
+            fi
+          done
 
       # Merge the release commit back to next so the branches stay in sync.
       # Uses --no-ff to create a merge commit for traceability.
