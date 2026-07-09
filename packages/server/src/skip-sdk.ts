@@ -260,7 +260,7 @@ export class SkipSDK {
         // Use provided config or fall back to Skip client env config
         const skipConfig = getSkipConfig();
         this.config = {
-            apiUrl: config?.apiUrl || skipConfig.chatURL,
+            apiUrl: config?.apiUrl || skipConfig.skipURL,
             apiKey: config?.apiKey || skipConfig.apiKey,
         };
     }
@@ -287,8 +287,9 @@ export class SkipSDK {
             const skipRequest = await this.buildSkipRequest(options);
 
             // Call Skip API with SSE streaming support
+            const chatUrl = `${(this.config.apiUrl || '').replace(/\/+$/, '')}/chat`;
             const responses = await this.sendSSERequest(
-                this.config.apiUrl,
+                chatUrl,
                 skipRequest,
                 this.buildHeaders(),
                 (streamMessage: SkipStreamMessage) => {
@@ -1333,12 +1334,11 @@ export class SkipSDK {
     }
 
     /**
-     * Derive an eval endpoint URL from the chat URL.
-     * chatURL: "https://brain-prod.askskip.ai/chat" → "https://brain-prod.askskip.ai/eval/run-agent"
+     * Derive an eval endpoint URL from the base URL.
+     * e.g. "https://brain-prod.askskip.ai" → "https://brain-prod.askskip.ai/eval/run-agent"
      */
     private getEvalUrl(path: string): string {
-        const chatUrl = this.config.apiUrl || '';
-        const baseUrl = chatUrl.replace(/\/chat\/?$/, '');
+        const baseUrl = (this.config.apiUrl || '').replace(/\/+$/, '');
         return `${baseUrl}/eval/${path}`;
     }
 

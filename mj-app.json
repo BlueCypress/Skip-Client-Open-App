@@ -33,11 +33,6 @@
     "schema": {
       "type": "object",
       "properties": {
-        "chatURL": {
-          "type": "string",
-          "title": "Skip API chat URL",
-          "description": "ASK_SKIP_CHAT_URL — the Skip API endpoint the client posts requests to."
-        },
         "apiKey": {
           "type": "string",
           "title": "Skip API key",
@@ -46,7 +41,6 @@
         }
       },
       "required": [
-        "chatURL",
         "apiKey"
       ]
     }

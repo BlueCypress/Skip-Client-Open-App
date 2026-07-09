@@ -9,11 +9,8 @@
 import { CredentialEngine } from '@memberjunction/credentials';
 import type { UserInfo } from '@memberjunction/core';
 
-/** Default Skip API base URL. Override with ASK_SKIP_CHAT_URL env var for non-production environments. */
+/** Default Skip API base URL. Override with ASK_SKIP_URL env var for non-production environments. */
 export const DEFAULT_SKIP_BASE_URL = 'https://brain-prod.askskip.ai';
-
-/** Default Skip chat endpoint derived from the base URL. */
-export const DEFAULT_SKIP_CHAT_URL = `${DEFAULT_SKIP_BASE_URL}/chat`;
 
 /**
  * Entity-filtering configuration loaded from `skip.config.cjs` (or defaults).
@@ -31,7 +28,8 @@ export interface SkipEntitiesToSendConfig {
  * Configuration shape consumed by the Skip client SDK.
  */
 export interface SkipClientConfig {
-    chatURL?: string;
+    /** Skip API base URL (e.g. `https://brain-prod.askskip.ai`). Endpoints like `/chat` are derived from this. */
+    skipURL?: string;
     apiKey?: string;
     baseUrl?: string;
     publicUrl?: string;
@@ -98,7 +96,7 @@ function loadEntitiesToSend(): SkipEntitiesToSendConfig {
  */
 export function getSkipConfig(): SkipClientConfig {
     return {
-        chatURL: process.env.ASK_SKIP_CHAT_URL ?? DEFAULT_SKIP_CHAT_URL,
+        skipURL: process.env.ASK_SKIP_URL ?? DEFAULT_SKIP_BASE_URL,
         apiKey: process.env.ASK_SKIP_API_KEY,
         // Defaults mirror MJServer's config.ts (baseUrl/publicUrl/graphqlPort/graphqlRootPath)
         // so the callback URL `${baseUrl}:${graphqlPort}${graphqlRootPath}` is well-formed even
