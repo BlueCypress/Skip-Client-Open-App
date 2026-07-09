@@ -57,7 +57,7 @@ jobs:
           git config --global user.name "GitHub Actions"
           git remote set-url origin "https://$REPO_PAT@github.com/BlueCypress/Skip-Client-Open-App"
         env:
-          REPO_PAT: ${{ secrets.BC_GH_BOT_GITHUB_TOKEN }}
+          REPO_PAT: ${{ secrets.SKIP_CLIENT_GH_BOT_TOKEN }}
 
       # Apply changesets: bumps versions in all package.json files, writes CHANGELOG entries,
       # and deletes consumed .changeset/*.md files. The "fixed" config in .changeset/config.json
