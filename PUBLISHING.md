@@ -1,169 +1,116 @@
 # Publishing the Skip Client packages
 
 > **Public packages, public repo.** All packages are published **publicly** to the **`@askskip`**
-> npm org, and this GitHub repo is public. Each `package.json` pins `publishConfig.access = "public"`
-> so a plain `npm publish` publishes the scoped package publicly (no `--access` flag needed). Anyone
-> can install them — including `mj app install` — with **no npm authentication**.
+> npm org. Each `package.json` pins `publishConfig.access = "public"` so a plain `npm publish`
+> publishes the scoped package publicly (no `--access` flag needed). Anyone can install them —
+> including `mj app install` — with **no npm authentication**.
 
-This repo is an **npm workspaces monorepo**. The package list is derived from the root `workspaces`
-field — `npm run list:packages` prints it in dependency order — so the packaging scripts and CI pick
-up new packages automatically. Today it publishes:
+This repo is an **npm workspaces monorepo** using **[@changesets/cli](https://github.com/changesets/changesets)** for versioning and publishing, matching the MJ and SaaS repos. Today it publishes:
 
-| Package | Path | What it is | npm deps |
-| --- | --- | --- | --- |
-| **`@askskip/types`** | [`packages/types`](packages/types) | Skip request/response types shared with the Skip API (extracted from the former `@memberjunction/skip-types`). | a few `@memberjunction/*` type packages (light) |
-| **`@askskip/core`** | [`packages/core`](packages/core) | Shared foundation: config + API-key resolver, Skip record helpers, and the install (`setup`) / uninstall (`teardown`) hooks. | `core`, `credentials` (light) |
-| **`@askskip/server`** | [`packages/server`](packages/server) | Server runtime: SkipProxyAgent, SkipSDK, callback-key provisioner, middleware, `registerSkip`. | the heavy AI/server set **+ `@askskip/core` + `@askskip/types`** |
+| Package | Path | What it is |
+| --- | --- | --- |
+| **`@askskip/types`** | [`packages/types`](packages/types) | Skip request/response types shared with the Skip API |
+| **`@askskip/core`** | [`packages/core`](packages/core) | Config, API-key resolver, Skip record helpers, install/uninstall hooks |
+| **`@askskip/server`** | [`packages/server`](packages/server) | SkipProxyAgent, SkipSDK, callback-key provisioner, middleware |
 
-**Every workspace package and `mj-app.json` share one version** and are always released together — so
-the npm packages, the Open App manifest, and the release tag never drift. Any internal `@askskip/*`
-dependency is pinned at an **exact, lockstep version** (e.g. `0.0.2`, not a range) — `@askskip/server`,
-for instance, pins both `@askskip/core` and `@askskip/types` exactly. A CI check
-(`npm run check:lockstep`) fails the build if any package or the manifest diverges, or an internal
-dep isn't an exact pin. Internal dependencies only ever point one way (`server → core`, `server →
-types`, never the reverse), which keeps the install hooks free of the runtime's heavy dependencies and
-avoids circular dependencies.
-
-Most releases are **automated** — see [Releases (manual)](#releases-manual). The
-[one-time bootstrap](#one-time-bootstrap-per-package) must be done once per package before
-automation works.
+**All packages are versioned in lockstep** via the `"fixed"` config in `.changeset/config.json` — a changeset for any one package bumps them all to the same version.
 
 ---
 
-## How automated publishing works
+## How it works
+
+### 1. Create a changeset (on your feature branch)
+
+```bash
+npm run change
+```
+
+Follow the prompts to select the bump level (patch/minor/major) and describe your changes. This creates a `.changeset/<random-name>.md` file — commit it with your PR.
+
+You can also create the file manually:
+
+```markdown
+---
+"@askskip/types": patch
+"@askskip/core": patch
+"@askskip/server": patch
+---
+
+Description of your changes
+```
+
+### 2. Merge to `next`, then to `main`
+
+PRs target `next`. When `next` merges to `main`, the publish workflow runs automatically.
+
+### 3. Automated publish (on push to `main`)
+
+The [publish workflow](.github/workflows/publish.yml) runs automatically on push to `main`:
+
+1. **Checks for pending changesets** — if none exist, the workflow exits (nothing to release).
+2. **`changeset version`** — reads `.changeset/*.md` files, bumps `package.json` versions in lockstep, writes CHANGELOG entries, deletes consumed changeset files.
+3. **Syncs `mj-app.json`** — updates both `version` and `mjVersionRange` from the bumped packages.
+4. **Builds** all packages in dependency order.
+5. **Commits + tags + pushes** — before publishing, so git and npm never drift.
+6. **`changeset publish`** — publishes all packages to npm via OIDC trusted publishing with provenance.
+7. **Merges `main` back to `next`** — keeps branches in sync.
+
+---
+
+## CI
 
 | Workflow | File | Trigger | What it does |
 | --- | --- | --- | --- |
-| **CI** | `.github/workflows/ci.yml` | PRs touching `packages/**` | `npm ci` + **`npm run check:lockstep`** + `npm run build` (whole workspace, in dependency order). No registry auth needed — internal `@askskip/*` deps resolve to the local workspace, never the registry. |
-| **Release & publish** | `.github/workflows/publish.yml` | **Manual only** — Actions tab → Run workflow | Versions the app in lockstep (**`bump=auto`** → minor if `migrations/`/`metadata/`/`mj-app.json` changed since the last release tag, else patch; or pick patch/minor/major). The next version is **anchored to npm** (base = highest published version, bumped by the level) and the run **fails if the files don't match** (see [plan-release.mjs](scripts/plan-release.mjs)). It then sets every package + internal pins + the manifest, commits the bump `[skip ci]`, tags `vX.Y.Z`, builds, and publishes every package (in dependency order) publicly via **trusted publishing (OIDC)** with provenance. |
-
-The publish step **loops over every workspace package in dependency order** (from
-`node scripts/list-packages.mjs`), so a lockstep release publishes each dependency before its
-dependents. Each package publishes only when its own `package.json` version isn't yet on the registry
-— so the workflow is **idempotent**, you release simply by bumping the version on `main`, and adding a
-new package needs no workflow change.
-
-**Authentication** uses npm **trusted publishing** (OIDC), so there is no `NPM_TOKEN` secret. The npm
-CLI detects the GitHub Actions OIDC environment and authenticates as the trusted publisher configured
-for each package on npmjs.com.
-
-**Provenance.** Because the repo is **public**, trusted publishing attaches a **provenance
-attestation** automatically (the publish step also passes `--provenance` explicitly). Published
-versions show a verified "Built and signed on GitHub Actions" badge on npm.
+| **CI** | `.github/workflows/ci.yml` | PRs touching `packages/**` | `npm ci` + `npm run build` (whole workspace, in dependency order) |
+| **Release & publish** | `.github/workflows/publish.yml` | Push to `main` or manual dispatch | Changeset version + publish + tag + merge back |
 
 ---
 
 ## Local build
 
 ```bash
-npm install        # at repo root — installs deps and symlinks internal @askskip/* packages together
-npm run build      # builds every package in dependency order (declared `workspaces` order)
+npm install        # at repo root — installs deps and symlinks internal @askskip/* packages
+npm run build      # builds every package in dependency order
 ```
 
-`npm run build` runs `npm run build --workspaces --if-present`, so it builds each package (in the order
-they appear in the root `workspaces` field — keep that in **dependency order**) and picks up new
-packages automatically. Per-package watch during development: `npm run watch:types` /
-`npm run watch:core` / `npm run watch:server`.
+Per-package watch during development: `npm run watch:types` / `npm run watch:core` / `npm run watch:server`.
 
 ---
 
 ## One-time bootstrap (per package)
 
 Trusted publishing can only be configured for a package that **already exists** on npm, so the
-**first publish of each package is a manual, token-based bootstrap**. Publish in dependency order
-(a dependency before its dependents) — run `npm run list:packages` to see that order. A brand-new
-package (e.g. `@askskip/types` was added after the initial release) needs this same one-time
-bootstrap the first time it publishes.
+**first publish of each package is a manual, token-based bootstrap**.
 
-### Prerequisites
-
-- An account in the **`@askskip`** org with **publish** rights. (Public packages are free — no paid
-  npm plan required.)
-- Node **≥ 22.14.0** and npm **≥ 11.5.1** locally (`npm install -g npm@latest` if needed).
-
-### 1. First publish (manual, token-based)
+### 1. First publish (manual)
 
 ```bash
 npm login
-npm install
-npm run build
+npm install && npm run build
 
-# Publish dependencies FIRST — go in `npm run list:packages` order. publishConfig.access=public
-# publishes each scoped package publicly, so no --access flag is needed:
 cd packages/types  && npm publish && cd ../..
 cd packages/core   && npm publish && cd ../..
 cd packages/server && npm publish && cd ../..
 ```
 
-Verify:
+### 2. Configure trusted publisher on npmjs.com (for EACH package)
 
-```bash
-npm view @askskip/types version
-npm view @askskip/core version
-npm view @askskip/server version
-```
+For each `@askskip/*` package:
 
-### 2. Configure the trusted publisher on npmjs.com (for EACH package)
-
-For **each** workspace package (`@askskip/types`, `@askskip/core`, `@askskip/server`, and any added later):
-
-1. npmjs.com → the package → **Settings → Trusted Publishing**.
-2. Add a **GitHub Actions** trusted publisher:
-   - **Organization / user:** `BlueCypress`
+1. npmjs.com -> package -> **Settings -> Trusted Publishing**
+2. Add **GitHub Actions** trusted publisher:
+   - **Organization:** `BlueCypress`
    - **Repository:** `Skip-Client-Open-App`
    - **Workflow filename:** `publish.yml`
    - **Environment:** _(leave blank)_
-3. **Allowed actions:** ensure **`npm publish`** is selected. (Trusted-publisher configs created
-   after 2026-05-20 require you to pick at least one allowed action explicitly.)
-4. Save.
-
-After each package is configured, every version bump released from `main` publishes automatically.
+3. **Allowed actions:** ensure `npm publish` is selected
+4. Save
 
 ---
 
-## Releases (manual)
+## Manual publish fallback
 
-> **Releases are manual for now — nothing publishes on merge.** A maintainer triggers a release from
-> the **Actions** tab → **Release & publish** → **Run workflow**.
-
-Pick the **`bump`** input:
-
-| `bump` | Result |
-|---|---|
-| **`auto`** (default) | **minor** if `migrations/`, `metadata/`, or `mj-app.json` changed since the last release tag, else **patch** |
-| `patch` / `minor` / `major` | force that level (use `major` for breaking releases) |
-
-The workflow then:
-
-1. Resolves the bump level (auto from the last-tag diff, or the level you picked).
-2. **Plans the version against npm** (`scripts/plan-release.mjs`): the base is the highest version
-   already published across the packages, and the next version is that base bumped by the level. It
-   **refuses to release** unless the files are at the base (a fresh release) or already at the bumped
-   version (resuming a release whose publish failed) — so a wrong version in the files can't jump or
-   skip a release.
-3. Runs `npm run version:lockstep <next>` — sets every workspace package (+ exact internal pins) and
-   `mj-app.json` to the planned version — and re-checks lockstep.
-4. Commits `chore(release): vX.Y.Z … [skip ci]`, tags `vX.Y.Z`, and pushes to `main`. (On a resume
-   run there's nothing to commit and the tag already exists, so these are skipped.)
-5. Publishes every package in dependency order publicly (with provenance). A package is a no-op if
-   that version is already on npm — so re-running after a partial failure safely finishes the release.
-
-> **Don't bump versions inside a PR** — the release workflow owns versioning; branches stay at the
-> current released version. To bump locally for any reason, use `npm run version:lockstep <version>`
-> (never `npm version -w <pkg>`, which bumps one package and leaves the pin behind — the lockstep
-> check rejects that).
-
-> **Branch protection:** the workflow pushes the release commit + tag to `main`, so the GitHub Actions
-> token must be allowed to push to `main` (if `main` is protected, let the actions bot bypass, or use
-> a PAT / GitHub App token). The push happens **before** publishing, so a rejected push fails the run
-> without publishing to npm.
-
----
-
-## Manual publish fallback (if CI is unavailable)
-
-A maintainer with org publish rights can publish by hand. **Build first, and publish in dependency
-order** (`npm run list:packages`):
+If CI is unavailable, a maintainer with org publish rights can publish by hand:
 
 ```bash
 npm install && npm run build
@@ -172,21 +119,17 @@ cd packages/core   && npm publish && cd ../..
 cd packages/server && npm publish && cd ../..
 ```
 
-Skip a package whose version is already published. (`publishConfig.access=public` keeps these
-public; a local manual publish won't attach provenance — only the OIDC CI publish does.)
+Skip any package whose version is already published.
 
 ---
 
 ## Consuming the packages
 
-The packages are **public**, so **no npm authentication is required**. Any environment — developer
-machines, CI, and the MJ instance running `mj app install` — can install them directly:
+The packages are **public** — no npm authentication required:
 
 ```bash
-npm install @askskip/server   # pulls in @askskip/core
+npm install @askskip/server   # pulls in @askskip/core and @askskip/types
 ```
-
-No `.npmrc` token entry is needed for the `@askskip` scope.
 
 ---
 
@@ -196,32 +139,26 @@ No `.npmrc` token entry is needed for the `@askskip` scope.
 npm view @askskip/server version
 npm view @askskip/core version
 npm view @askskip/types version
-
-# Inspect exactly what would be packed, without publishing:
-cd packages/server && npm pack --dry-run
 ```
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Cause / fix |
+| Symptom | Fix |
 | --- | --- |
-| Release fails at **Plan release** with "version mismatch — refusing to release" | The files' version isn't the base (highest published on npm) or the base bumped by your chosen level — usually a hand-edited version. Reconcile the files to the last released version with `npm run version:lockstep <version>`, then re-run. This guard is what prevents jumped/skipped releases. |
-| A release published some packages then failed | Re-run the same workflow with the same bump — it detects the files are already at the target version (**resume** mode), skips the commit/tag, and publishes only the packages not yet on npm. |
-| First-ever publish of a **new** package fails with `404 PUT .../<pkg>` | Trusted publishing (OIDC) can't create a package that doesn't exist yet. Do the one-time [manual bootstrap](#1-first-publish-manual-token-based) for that package, configure its trusted publisher, then re-run (resume mode finishes the release). |
-| Publish workflow ran but published nothing | Neither package's `package.json` version changed. Bump the one(s) you want to release. |
-| `npm error 403 ... you do not have permission` (CI) | Trusted publisher not configured for that package, or its repo/workflow fields don't match, or `npm publish` isn't an allowed action. Re-check [step 2](#2-configure-the-trusted-publisher-on-npmjscom-for-each-package); each package is configured separately; the workflow file must be `publish.yml`. |
-| Package accidentally published as **private/restricted** | `publishConfig.access` is `public` in every `package.json` — keep it, and don't pass `--access restricted`. To fix an already-restricted package, change its visibility in npm package settings (or `npm access public @askskip/<pkg>`). |
-| `npm error 402 / cannot publish over existing version` | That exact version is already published (npm versions are immutable). Bump and retry. |
-| Provenance missing on a release | Provenance is attached only by the **OIDC CI publish** from this **public** repo. A local manual publish won't have it; re-publish a new version via CI to attach provenance. |
-| OIDC / `id-token` errors in CI | The job needs `permissions: id-token: write` (already set) and npm **≥ 11.5.1** (the workflow upgrades npm). |
-| First-ever publish fails via OIDC | Expected — trusted publishing needs the package to exist first. Do the [manual bootstrap](#1-first-publish-manual-token-based). |
+| No changeset files, nothing published | Create a changeset on your feature branch: `npm run change` |
+| First publish of a new package fails (404) | OIDC can't create packages that don't exist. Do the [manual bootstrap](#1-first-publish-manual) first. |
+| `403 ... you do not have permission` (CI) | Trusted publisher not configured for that package. Check [step 2](#2-configure-trusted-publisher-on-npmjscom-for-each-package). |
+| `402 / cannot publish over existing version` | That version is already on npm (immutable). Create a new changeset and release again. |
+| Provenance missing | Only CI publishes attach provenance. Re-release via CI. |
+| OIDC errors | Job needs `permissions: id-token: write` (already set) and npm >= 11.5.1. |
 
 ---
 
 ## Reference
 
+- [Changesets documentation](https://github.com/changesets/changesets)
 - [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/)
 - [npm package provenance](https://docs.npmjs.com/generating-provenance-statements)
 - Workflows: [`.github/workflows/publish.yml`](.github/workflows/publish.yml), [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
