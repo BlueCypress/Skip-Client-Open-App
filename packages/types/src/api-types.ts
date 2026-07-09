@@ -126,11 +126,8 @@ export class SkipAPIRequest {
     messages: SkipMessage[];
 
     /**
-     * This is an optional string parameter where you can tell Skip anything you'd like to share about your organization, structure, database schema, and anything else
-     * that might be helpful for him to be aware of. Keep in mind that this organizationInfo will be incorprorated into every request Skip makes to the underlying AI
-     * services which can add cost and processing time to your requests. Including this information is extremely helpful as a very simple method of 
-     * contextualizing Skip for your organization. In the Pro and above Skip plans, there are far more granular and effect methods of training Skip beyond this organizationInfo parameter, contact
-     * the team at MemberJunction.com for more information if you're interested.
+     * @deprecated Organization context is now provided via Skip Agent Notes.
+     * This field is retained for backward compatibility but is no longer used.
      */
     organizationInfo?: string;
     
@@ -169,9 +166,10 @@ export class SkipAPIRequest {
     userEmail: string;  
 
     /**
-     * The organization ID - this is part of the Skip API Authentication Request, along with the bearer token in the header
+     * @deprecated Organization is now resolved from the API key on the server side.
+     * This field is retained for backward compatibility but is no longer required.
      */
-    organizationID: string;
+    organizationID?: string;
 
     /**
      * The request phase, defined within the SkipRequestPhase type

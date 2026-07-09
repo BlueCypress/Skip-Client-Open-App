@@ -16,8 +16,10 @@
 import { LogStatus, LogError } from '@memberjunction/core';
 import type { UserInfo, IMetadataProvider } from '@memberjunction/core';
 import { CredentialEngine } from '@memberjunction/credentials';
-import { getSkipConfig } from './skip-config.js';
+import { getSkipConfig, DEFAULT_ENTITIES_TO_SEND } from './skip-config.js';
 import { ensureSkipRecords } from './skip-records.js';
+import { existsSync, writeFileSync } from 'fs';
+import { resolve } from 'path';
 
 /**
  * Payload the Open App engine passes to in-process hook modules. Structurally matches
@@ -58,12 +60,9 @@ export default async function setup(payload: SkipHookPayload): Promise<void> {
     log('Configuring the Skip Client app...');
 
     // The only interactive prompt is the API key — everything else uses defaults or env vars.
-    // URL defaults to the production Skip API (baked into @askskip/core); org ID is set by
-    // the Skip team in the environment during onboarding.
+    // URL defaults to the production Skip API (baked into @askskip/core).
     const baseURL = process.env.ASK_SKIP_URL ?? baseFromChatURL(env.chatURL);
     const chatURL = baseURL ? joinURL(baseURL, 'chat') : env.chatURL;
-    const orgID = env.orgID;
-    const orgInfo = env.organizationInfo;
     const apiKey = interactive
         ? cb!.OnPromptPassword
             ? await cb!.OnPromptPassword('Skip API key (ASK_SKIP_API_KEY)')
@@ -110,10 +109,10 @@ export default async function setup(payload: SkipHookPayload): Promise<void> {
     log('Skip Client configuration summary — set these as MJAPI environment variables, then restart MJAPI:');
     log(`  ASK_SKIP_URL=${baseURL ?? '(unset)'}`);
     log(`  ASK_SKIP_CHAT_URL=${chatURL ?? '(unset)'}`);
-    log(`  ASK_SKIP_ORGANIZATION_ID=${orgID ?? '(unset)'}`);
-    if (orgInfo) {
-        log(`  ASK_SKIP_ORGANIZATION_INFO=${orgInfo}`);
-    }
+    log('  (Organization is identified automatically via your Skip API key.)');
+
+    // Offer to create skip.config.cjs with entity-filtering defaults
+    await maybeCreateSkipConfigFile(payload.RepoRoot, interactive, cb, log);
 
     // Create the "Skip" AI Agent + component registry records (the agent record is what
     // `@skip` resolves to). Done via the entity framework so the wide AIAgent table's
@@ -125,4 +124,69 @@ export default async function setup(payload: SkipHookPayload): Promise<void> {
     }
 
     log('Skip Client app setup complete. Restart MJAPI to activate the Skip proxy agent.');
+}
+
+/**
+ * Generates the default skip.config.cjs file content from the baked-in defaults.
+ */
+function buildSkipConfigContent(): string {
+    const indent = '            ';
+    const entityList = DEFAULT_ENTITIES_TO_SEND.includeEntitiesFromExcludedSchemas
+        .map(e => `${indent}'${e}',`)
+        .join('\n');
+    const schemaList = DEFAULT_ENTITIES_TO_SEND.excludeSchemas
+        .map(s => `'${s}'`)
+        .join(', ');
+
+    return `/**
+ * Skip Client configuration.
+ *
+ * Controls which MJ entity metadata is sent to the Skip Brain API.
+ * Edit the lists below to include/exclude entities from the Skip payload.
+ * See CONFIGURATION.md for full documentation.
+ */
+module.exports = {
+    entitiesToSend: {
+        // Schemas whose entities are excluded from the Skip metadata payload.
+        excludeSchemas: [${schemaList}],
+        // Specific entity names to include even when their schema is excluded above.
+        includeEntitiesFromExcludedSchemas: [
+${entityList}
+        ],
+    },
+};
+`;
+}
+
+/**
+ * Prompts the operator to create a skip.config.cjs file if one does not already exist.
+ * In headless mode, skips without prompting.
+ */
+async function maybeCreateSkipConfigFile(
+    repoRoot: string,
+    interactive: boolean,
+    cb: SkipHookPayload['Callbacks'],
+    log: (m: string) => void,
+): Promise<void> {
+    const configPath = resolve(repoRoot, 'skip.config.cjs');
+    if (existsSync(configPath)) {
+        log(`skip.config.cjs already exists at ${configPath} — skipping.`);
+        return;
+    }
+
+    const shouldCreate = interactive && cb?.OnPromptConfirm
+        ? await cb.OnPromptConfirm('Create a skip.config.cjs file with default entity-filtering settings?', { default: true })
+        : false; // headless: don't create, defaults in code are fine
+
+    if (!shouldCreate) {
+        log('Skipped skip.config.cjs creation (built-in defaults will be used). You can create one later — see CONFIGURATION.md.');
+        return;
+    }
+
+    try {
+        writeFileSync(configPath, buildSkipConfigContent(), 'utf-8');
+        log(`✓ Created ${configPath} with default entity-filtering settings. Edit it to customize which entities Skip can see.`);
+    } catch (e) {
+        LogError(`[skip-client setup] Could not write skip.config.cjs: ${e instanceof Error ? e.message : String(e)}`);
+    }
 }

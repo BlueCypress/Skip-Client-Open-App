@@ -5,8 +5,7 @@
  * MJServer's serve() at boot (after the DB pool, Metadata, UserCache and APIKeyEngine
  * are ready, and before the GraphQL schema is built / any agent runs). Its Initialize()
  * verifies that the scoped-callback prerequisites this app deploys are actually present
- * on the instance — so a misconfigured install fails loud rather than silently falling
- * back to the unrestricted MJ_API_KEY callback path.
+ * on the instance — so a misconfigured install fails loud rather than silently degrading.
  *
  * Importing this module also pulls in skip-agent.js, triggering the
  * `@RegisterClass(BaseAgent, 'SkipProxyAgent')` registration.
@@ -68,8 +67,8 @@ export class SkipMiddleware extends BaseServerMiddleware {
             if (!serviceAccount) {
                 LogError(
                     `[skip-client] Skip Service Account (${SKIP_SERVICE_EMAIL}) not found in the user cache. ` +
-                    `The Skip Client app's install migration should have created it. Skip callbacks will fall back ` +
-                    `to the legacy MJ_API_KEY until this is resolved.`,
+                    `The Skip Client app's install migration should have created it. ` +
+                    `Scoped callback key provisioning will fail until this is resolved.`,
                 );
             }
             if (missingScopes.length) {

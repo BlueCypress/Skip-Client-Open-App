@@ -14,7 +14,7 @@ Before installing, ensure your MJ environment meets these requirements:
    # Generate one if you don't have it:
    openssl rand -base64 32
    ```
-3. **Skip API key and organization ID** — provided by the Skip team during onboarding
+3. **Skip API key** — provided by the Skip team during onboarding
 4. **`mj` CLI installed** — `npm install -g @memberjunction/cli`
 
 ### Step 1: Configure your project layout (if needed)
@@ -40,7 +40,6 @@ The installer will:
 3. Add the `dynamicPackages.server` entry to `mj.config.cjs`
 4. Run the **interactive setup wizard**, which prompts for:
    - **Skip API base URL** (`ASK_SKIP_URL`) — e.g., `https://brain-prod.askskip.ai`
-   - **Skip organization ID** (`ASK_SKIP_ORGANIZATION_ID`)
    - **Skip API key** (`ASK_SKIP_API_KEY`) — stored encrypted in the MJ credential store
 
 ### Step 3: Set environment variables
@@ -50,7 +49,6 @@ After the setup wizard completes, add these to your MJAPI environment (`.env` fi
 ```bash
 ASK_SKIP_URL=https://brain-prod.askskip.ai
 ASK_SKIP_CHAT_URL=https://brain-prod.askskip.ai/chat
-ASK_SKIP_ORGANIZATION_ID=<your-org-id>
 # ASK_SKIP_API_KEY is stored encrypted in the credential store by the setup wizard.
 # Set it here as a fallback only if the credential store is not available:
 # ASK_SKIP_API_KEY=skip-xxxxx
@@ -148,18 +146,50 @@ npm install
 
 ## Configuration Reference
 
+### Environment variables
+
 | Env var | Required | Purpose |
 |---|:---:|---|
 | `ASK_SKIP_URL` | Yes | Skip API base URL (e.g., `https://brain-prod.askskip.ai`) |
 | `ASK_SKIP_CHAT_URL` | Yes | Skip chat endpoint (usually `${ASK_SKIP_URL}/chat`) |
 | `ASK_SKIP_API_KEY` | Yes* | Outbound API key sent to Skip (*stored encrypted by setup wizard; env is fallback) |
-| `ASK_SKIP_ORGANIZATION_ID` | Yes | Your organization's Skip ID |
-| `ASK_SKIP_ORGANIZATION_INFO` | No | Optional organization description |
 | `MJ_BASE_ENCRYPTION_KEY` | Yes | Encrypts stored credentials (generate with `openssl rand -base64 32`) |
 | `GRAPHQL_BASE_URL` | No | MJAPI base URL for callbacks (default: `http://localhost`) |
 | `MJAPI_PUBLIC_URL` | No | Public URL for callbacks if behind a proxy (e.g., ngrok URL) |
 | `GRAPHQL_PORT` | No | MJAPI port (default: `4000`) |
 | `GRAPHQL_ROOT_PATH` | No | GraphQL endpoint path (default: `/`) |
+
+Organization identification is handled automatically via the Skip API key — no separate org ID or org info env vars are needed.
+
+### skip.config.cjs (optional)
+
+Place a `skip.config.cjs` file in the MJAPI working directory to customize which entity metadata is sent to the Skip Brain API. If absent, sensible defaults are used (excludes `__mj` schema, includes a handful of key MJ entities).
+
+```javascript
+// skip.config.cjs
+module.exports = {
+    entitiesToSend: {
+        // Schemas to exclude from the Skip metadata payload
+        excludeSchemas: ['__mj'],
+        // Specific entities to include even if their schema is excluded above
+        includeEntitiesFromExcludedSchemas: [
+            'MJ: Tags',
+            'MJ: Tagged Items',
+            'MJ: Lists',
+            'MJ: List Details',
+            'MJ: Content Items',
+            'MJ: Content Item Tags',
+            'MJ: Content Item Attributes',
+            'MJ: Content Sources',
+            'MJ: Content Types',
+            'MJ: Content Process Runs',
+            // Add more as needed for your Skip integration
+        ],
+    },
+};
+```
+
+For full configuration documentation including callback URL construction, API key management, and all available options, see [CONFIGURATION.md](CONFIGURATION.md).
 
 ## What it deploys
 
@@ -173,7 +203,7 @@ npm install
 
 ## Security model
 
-Skip calls back into the client MJAPI using a **scoped API key** — not the unrestricted system key (`MJ_API_KEY`). The key is minted automatically by the callback-key provisioner for the Skip Service Account and granted exactly the scopes Skip needs (`view:run`, `view:batch`, `query:create/update/delete/test`, `search:execute`, `prompt:execute`, `agent:execute`, `embedding:generate`). The key is sent to Skip once at creation time; Skip stores it encrypted in its credential store.
+Skip calls back into the client MJAPI using a **scoped API key** minted automatically by the callback-key provisioner for the Skip Service Account. The key is granted exactly the scopes Skip needs (`view:run`, `view:batch`, `query:create/update/delete/test`, `search:execute`, `prompt:execute`, `agent:execute`, `embedding:generate`). The key is sent to Skip once at creation time; Skip stores it encrypted in its credential store.
 
 ## Repository layout
 
@@ -184,6 +214,7 @@ migrations-pg/                      # PostgreSQL counterpart (see PostgreSQL sup
 packages/types/                     # @askskip/types — Skip request/response types
 packages/core/                      # @askskip/core — config, record helpers, install hooks
 packages/server/                    # @askskip/server — server runtime package
+CONFIGURATION.md                    # Full configuration reference
 PUBLISHING.md                       # npm publishing guide
 ```
 

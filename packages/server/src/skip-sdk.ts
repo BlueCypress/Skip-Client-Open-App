@@ -30,7 +30,7 @@ import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { gzip as gzipCompress, createGunzip } from 'zlib';
 import { getSkipConfig, getDbType, resolveSkipApiKey } from '@askskip/core';
-import { getSkipCallbackKey, provisioningComplete as skipKeyProvisioned } from './skip-callback-key-provisioner.js';
+import { getSkipCallbackKey } from './skip-callback-key-provisioner.js';
 import { GetAIAPIKey } from '@memberjunction/ai';
 import { AIEngine } from '@memberjunction/aiengine';
 import { CopyScalarsAndArrays, UUIDsEqual } from '@memberjunction/global';
@@ -51,16 +51,6 @@ export interface SkipSDKConfig {
      * Skip API key for authentication
      */
     apiKey?: string;
-
-    /**
-     * Organization ID
-     */
-    organizationId?: string;
-
-    /**
-     * Optional organization context information
-     */
-    organizationInfo?: string;
 
     /**
      * Optional metadata provider this SDK instance binds to. When set, every metadata
@@ -272,8 +262,6 @@ export class SkipSDK {
         this.config = {
             apiUrl: config?.apiUrl || skipConfig.chatURL,
             apiKey: config?.apiKey || skipConfig.apiKey,
-            organizationId: config?.organizationId || skipConfig.orgID,
-            organizationInfo: config?.organizationInfo || skipConfig.organizationInfo
         };
     }
 
@@ -438,12 +426,9 @@ export class SkipSDK {
             notes: baseRequest.notes,
             noteTypes: baseRequest.noteTypes,
             userEmail: baseRequest.userEmail,
-            organizationID: baseRequest.organizationID,
-            organizationInfo: baseRequest.organizationInfo,
             apiKeys: baseRequest.apiKeys,
             callingServerURL: baseRequest.callingServerURL,
             callingServerAPIKey: baseRequest.callingServerAPIKey,
-            callingServerAccessToken: baseRequest.callingServerAccessToken,
             externalReferenceID,
             databasePlatform: getDbType()
         };
@@ -488,12 +473,8 @@ export class SkipSDK {
             if (newlyCreatedKey) {
                 // First time: send raw key so Skip can persist it
                 callingServerAPIKey = newlyCreatedKey;
-            } else if (!skipKeyProvisioned && skipConfig.legacyCallbackAPIKey) {
-                // Provisioning failed (missing service account, scopes, etc.)
-                // Fall back to legacy MJ_API_KEY during transition period
-                callingServerAPIKey = skipConfig.legacyCallbackAPIKey;
             }
-            // else: skipKeyProvisioned=true, key exists in DB, Skip already has it — omit callingServerAPIKey
+            // else: provisioningComplete=true, key exists in DB, Skip already has it — omit callingServerAPIKey
         }
 
         return {
@@ -503,12 +484,9 @@ export class SkipSDK {
             notes,
             noteTypes,
             userEmail: contextUser.Email,
-            organizationID: this.config.organizationId,
-            organizationInfo: this.config.organizationInfo,
             apiKeys: this.buildAPIKeys(),
             callingServerURL,
             callingServerAPIKey,
-            callingServerAccessToken: undefined
         };
     }
 
@@ -1288,7 +1266,6 @@ export class SkipSDK {
                     callingServerURL: baseRequest.callingServerURL,
                     callingServerAPIKey: baseRequest.callingServerAPIKey,
                 },
-                callingServerAccessToken: baseRequest.callingServerAccessToken,
             };
 
             const response = await fetch(evalUrl, {
