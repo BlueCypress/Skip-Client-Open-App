@@ -98,6 +98,19 @@ jobs:
           npm run check:lockstep
           npm install --package-lock-only # keep the lockfile in sync with the new workspace versions
 
+      # Sync mjVersionRange in mj-app.json to match the @memberjunction/core peer dep.
+      # Same pattern as SaaS and bizapps-common: >=MIN <NEXT_MAJOR (e.g. >=5.45.1 <6.0.0).
+      - name: Sync mjVersionRange in mj-app.json
+        run: |
+          set -euo pipefail
+          MJ_RAW="$(jq -r '.peerDependencies["@memberjunction/core"]' packages/core/package.json)"
+          MJ_MIN="$(echo "$MJ_RAW" | sed 's/^[^0-9]*//')"
+          MJ_MAJOR="$(echo "$MJ_MIN" | cut -d. -f1)"
+          MJ_NEXT_MAJOR="$(( MJ_MAJOR + 1 )).0.0"
+          MJ_RANGE=">=${MJ_MIN} <${MJ_NEXT_MAJOR}"
+          echo "Setting mjVersionRange to: $MJ_RANGE (from @memberjunction/core $MJ_RAW)"
+          jq --arg range "$MJ_RANGE" '.mjVersionRange = $range' mj-app.json > mj-app.tmp && mv mj-app.tmp mj-app.json
+
       - name: Build workspace (dependency order)
         run: npm run build
 
