@@ -529,7 +529,7 @@ export class SkipSDK {
             Category: q.Category,
             CategoryPath: this.buildQueryCategoryPath(qe, q.CategoryID),
             CategoryID: q.CategoryID,
-            SQL: q.SQL,
+            SQL: q.GetPlatformSQL(getDbType()),
             Status: q.Status,
             QualityRank: q.QualityRank,
             Reusable: q.Reusable,

@@ -154,11 +154,14 @@ export async function resolveSkipApiKey(contextUser: UserInfo): Promise<string |
 }
 
 /**
- * Returns the database platform Skip should target, derived from DB_PROVIDER.
- * Replacement for MJServer's getDbType.
+ * Returns the database platform Skip should target, derived from DB_PLATFORM.
+ * Uses the same env var as MJ's resolveDbPlatformFromEnv() for consistency.
+ * Falls back to DB_PROVIDER for backward compatibility.
  */
 export function getDbType(): 'sqlserver' | 'postgresql' {
-    return process.env.DB_PROVIDER?.toLowerCase().includes('pg') || process.env.DB_PROVIDER?.toLowerCase() === 'postgresql'
-        ? 'postgresql'
-        : 'sqlserver';
+    const raw = (process.env.DB_PLATFORM ?? process.env.DB_PROVIDER ?? '').trim().toLowerCase();
+    if (raw === 'postgresql' || raw === 'pg') {
+        return 'postgresql';
+    }
+    return 'sqlserver';
 }

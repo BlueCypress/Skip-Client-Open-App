@@ -24,7 +24,7 @@ Organization identification is handled automatically via the Skip API key -- no 
 | `MJAPI_PUBLIC_URL` | _(none)_ | Public-facing callback URL. When set, takes precedence over `GRAPHQL_BASE_URL:GRAPHQL_PORT`. Use this when MJAPI is behind a reverse proxy or tunnel (e.g., ngrok). |
 | `GRAPHQL_PORT` | `4000` | MJAPI port, appended to `GRAPHQL_BASE_URL` when `MJAPI_PUBLIC_URL` is not set. |
 | `GRAPHQL_ROOT_PATH` | `/` | GraphQL endpoint path, appended to the callback URL. |
-| `DB_PROVIDER` | _(none)_ | Database platform. Set to `pg` or `postgresql` if running against PostgreSQL; otherwise SQL Server is assumed. Tells Skip Brain which SQL dialect to generate. |
+| `DB_PLATFORM` | _(none)_ | Database platform. Set to `postgresql` if running against PostgreSQL; otherwise SQL Server is assumed. Uses the same env var as MJ's `resolveDbPlatformFromEnv()`. Legacy `DB_PROVIDER` is still accepted as a fallback. Tells Skip Brain which SQL dialect to generate. |
 
 ### Callback URL Construction
 
