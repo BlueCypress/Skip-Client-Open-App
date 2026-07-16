@@ -1,5 +1,19 @@
 # @askskip/server
 
+## 0.0.7
+
+### Patch Changes
+
+- 32a28ac: Add scope reconciliation for callback API keys and forward databasePlatform through the eval pipeline
+
+  - Callback key provisioner now reconciles scopes on existing keys at startup, adding missing scopes and removing stale ones
+  - Added narrowly-scoped entity CRUD scopes (entity:read/create/update/delete) restricted to query-family entities via resource patterns
+  - Moved databasePlatform resolution into buildBaseRequest so it flows consistently through eval and all request builders
+
+- Updated dependencies [32a28ac]
+  - @askskip/types@0.0.7
+  - @askskip/core@0.0.7
+
 ## 0.0.6
 
 ### Patch Changes
