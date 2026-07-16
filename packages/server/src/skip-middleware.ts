@@ -14,10 +14,11 @@ import { RegisterClass } from '@memberjunction/global';
 import { BaseServerMiddleware } from '@memberjunction/server';
 import { LogStatus, LogError, Metadata } from '@memberjunction/core';
 import type { IMetadataProvider, UserInfo } from '@memberjunction/core';
-import type { Application, Request, Response } from 'express';
+import type { Application, Request, Response, RequestHandler } from 'express';
+import { Router, json as jsonBodyParser } from 'express';
 import { GetAPIKeyEngine } from '@memberjunction/api-keys';
 import { UserCache } from '@memberjunction/sqlserver-dataprovider';
-import { ensureSkipRecords } from '@askskip/core';
+import { ensureSkipRecords, getSkipConfig, DEFAULT_SKIP_BASE_URL } from '@askskip/core';
 import { SkipSDK } from './skip-sdk.js';
 
 // Side-effect import: ensure SkipProxyAgent's @RegisterClass(BaseAgent, 'SkipProxyAgent') runs.
@@ -52,6 +53,12 @@ export class SkipMiddleware extends BaseServerMiddleware {
      */
     async Initialize(): Promise<void> {
         try {
+            // Derive REGISTRY_URI_OVERRIDE_SKIP and REGISTRY_API_KEY_SKIP from the Skip
+            // config so operators don't have to set them separately. MJ's ComponentRegistryResolver
+            // reads these env vars to override the production registry URI and authenticate.
+            // Only set if not already explicitly configured (env vars win over derived values).
+            this.deriveRegistryEnvVars();
+
             const engine = GetAPIKeyEngine();
             const scopes = engine.Scopes ?? [];
             // Only run the scope check once the engine cache is populated; an empty cache
@@ -99,13 +106,24 @@ export class SkipMiddleware extends BaseServerMiddleware {
     }
 
     /**
-     * Register Skip eval proxy endpoints on the Express app.
-     * These let the eval CLI runner trigger eval runs through the client MJAPI
-     * (which handles entity/query metadata and scoped callback auth) without
-     * needing direct database credentials.
+     * Register Skip eval proxy endpoints as post-auth middleware.
+     *
+     * Only enabled when `enableEval: true` is set in `skip.config.cjs`. This
+     * ensures eval endpoints are not exposed on production client environments.
+     * Only eval-target environments (e.g. More Cheese staging) opt in.
+     *
+     * Routes run AFTER the unified auth middleware so `req['mjUser']` is populated.
      */
-    ConfigureExpressApp(app: Application): void {
-        app.post('/eval/run', async (req: Request, res: Response) => {
+    GetPostAuthMiddleware(): RequestHandler[] {
+        const config = getSkipConfig();
+        if (!config.enableEval) {
+            return [];
+        }
+
+        const evalRouter = Router();
+        evalRouter.use(jsonBodyParser({ limit: '50mb' }));
+
+        evalRouter.post('/eval/run', async (req: Request, res: Response) => {
             try {
                 const userRecord = (req as unknown as Record<string, unknown>)['mjUser'] as UserInfo | undefined;
                 if (!userRecord) {
@@ -138,7 +156,7 @@ export class SkipMiddleware extends BaseServerMiddleware {
             }
         });
 
-        app.post('/eval/run-prompt', async (req: Request, res: Response) => {
+        evalRouter.post('/eval/run-prompt', async (req: Request, res: Response) => {
             try {
                 const userRecord = (req as unknown as Record<string, unknown>)['mjUser'] as UserInfo | undefined;
                 if (!userRecord) {
@@ -169,11 +187,39 @@ export class SkipMiddleware extends BaseServerMiddleware {
             }
         });
 
-        LogStatus('[skip-client] Registered /eval/run and /eval/run-prompt endpoints.');
+        LogStatus('[skip-client] Registered /eval/run and /eval/run-prompt endpoints (post-auth).');
+        return [evalRouter as unknown as RequestHandler];
     }
 
     /** No Skip-specific GraphQL resolvers today; reserved for future client-side Skip endpoints. */
     GetResolverPaths(): string[] {
         return [];
+    }
+
+    /**
+     * Derive REGISTRY_URI_OVERRIDE_SKIP and REGISTRY_API_KEY_SKIP from the Skip config
+     * so operators don't need separate env vars for the component registry. MJ's
+     * ComponentRegistryResolver reads these to override the production registry URI
+     * (stored in the DB as https://registry.askskip.ai/) and to authenticate.
+     *
+     * Only sets them when ASK_SKIP_URL points at a non-production Skip instance —
+     * production uses the DB-stored URI directly and resolves the API key from the
+     * credential store. Explicit env vars always win (not overwritten).
+     */
+    private deriveRegistryEnvVars(): void {
+        const config = getSkipConfig();
+        const skipURL = config.skipURL?.replace(/\/+$/, '');
+
+        // Derive registry URI: only override when pointing at non-production Skip
+        if (skipURL && skipURL !== DEFAULT_SKIP_BASE_URL && !process.env.REGISTRY_URI_OVERRIDE_SKIP) {
+            process.env.REGISTRY_URI_OVERRIDE_SKIP = `${skipURL}/registry/api/v1`;
+            LogStatus(`[skip-client] Derived REGISTRY_URI_OVERRIDE_SKIP from ASK_SKIP_URL: ${process.env.REGISTRY_URI_OVERRIDE_SKIP}`);
+        }
+
+        // Derive registry API key: reuse the Skip API key if no explicit registry key is set
+        if (config.apiKey && !process.env.REGISTRY_API_KEY_SKIP) {
+            process.env.REGISTRY_API_KEY_SKIP = config.apiKey;
+            LogStatus('[skip-client] Derived REGISTRY_API_KEY_SKIP from ASK_SKIP_API_KEY.');
+        }
     }
 }

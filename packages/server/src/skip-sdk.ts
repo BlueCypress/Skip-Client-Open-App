@@ -431,7 +431,7 @@ export class SkipSDK {
             callingServerURL: baseRequest.callingServerURL,
             callingServerAPIKey: baseRequest.callingServerAPIKey,
             externalReferenceID,
-            databasePlatform: getDbType()
+            databasePlatform: baseRequest.databasePlatform
         };
 
         return request;
@@ -488,6 +488,7 @@ export class SkipSDK {
             apiKeys: this.buildAPIKeys(),
             callingServerURL,
             callingServerAPIKey,
+            databasePlatform: getDbType(),
         };
     }
 
@@ -529,7 +530,7 @@ export class SkipSDK {
             Category: q.Category,
             CategoryPath: this.buildQueryCategoryPath(qe, q.CategoryID),
             CategoryID: q.CategoryID,
-            SQL: q.SQL,
+            SQL: q.GetPlatformSQL(getDbType()),
             Status: q.Status,
             QualityRank: q.QualityRank,
             Reusable: q.Reusable,
@@ -1267,6 +1268,7 @@ export class SkipSDK {
                     callingServerURL: baseRequest.callingServerURL,
                     callingServerAPIKey: baseRequest.callingServerAPIKey,
                 },
+                databasePlatform: baseRequest.databasePlatform,
             };
 
             const response = await fetch(evalUrl, {

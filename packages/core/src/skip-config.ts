@@ -6,6 +6,8 @@
  * the MJ-core encrypted credential store when available (falling back to env).
  */
 
+import { createRequire } from 'module';
+import { resolve, dirname, parse } from 'path';
 import { CredentialEngine } from '@memberjunction/credentials';
 import type { UserInfo } from '@memberjunction/core';
 
@@ -36,6 +38,19 @@ export interface SkipClientConfig {
     graphqlPort?: number;
     graphqlRootPath?: string;
     entitiesToSend?: SkipEntitiesToSendConfig;
+    /**
+     * When true, the `/eval/run` and `/eval/run-prompt` proxy endpoints are
+     * registered on the client MJAPI server. Only enable on environments that
+     * serve as eval targets (e.g. More Cheese staging).
+     *
+     * Set in `skip.config.cjs`:
+     * ```js
+     * module.exports = { enableEval: true, entitiesToSend: { ... } };
+     * ```
+     *
+     * @default false
+     */
+    enableEval?: boolean;
 }
 
 /**
@@ -60,33 +75,42 @@ export const DEFAULT_ENTITIES_TO_SEND: SkipEntitiesToSendConfig = {
 };
 
 /**
- * Attempts to load a `skip.config.cjs` file from the MJAPI working directory.
- * Returns the `entitiesToSend` section if present, otherwise falls back to
- * {@link DEFAULT_ENTITIES_TO_SEND}.
+ * Loads the `skip.config.cjs` file, searching from the MJAPI working directory
+ * up to the repository root. This handles mono-repo layouts where `skip.config.cjs`
+ * lives at the repo root but the MJAPI process CWD is a nested `apps/MJAPI` directory.
  *
- * The file is expected to export an object like:
- * ```js
- * module.exports = {
- *     entitiesToSend: {
- *         excludeSchemas: ['__mj'],
- *         includeEntitiesFromExcludedSchemas: ['Entities', 'Entity Fields'],
- *     },
- * };
- * ```
+ * Uses `createRequire` for ESM compatibility — the config file is CommonJS (.cjs)
+ * so it must be loaded via require(), not import().
  */
-function loadEntitiesToSend(): SkipEntitiesToSendConfig {
-    try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const cfg = require(require('path').resolve(process.cwd(), 'skip.config.cjs'));
-        if (cfg?.entitiesToSend) {
-            return {
-                excludeSchemas: cfg.entitiesToSend.excludeSchemas ?? DEFAULT_ENTITIES_TO_SEND.excludeSchemas,
-                includeEntitiesFromExcludedSchemas:
-                    cfg.entitiesToSend.includeEntitiesFromExcludedSchemas ?? DEFAULT_ENTITIES_TO_SEND.includeEntitiesFromExcludedSchemas,
-            };
+function loadSkipConfigFile(): Record<string, unknown> | null {
+    let dir = process.cwd();
+    const root = parse(dir).root;
+
+    while (dir !== root) {
+        try {
+            const req = createRequire(resolve(dir, '__placeholder.js'));
+            return req('./skip.config.cjs');
+        } catch {
+            // Not found at this level — walk up
         }
-    } catch {
-        // No skip.config.cjs found — use defaults (this is normal for most installs)
+        dir = dirname(dir);
+    }
+
+    return null;
+}
+
+/**
+ * Extracts the `entitiesToSend` section from the loaded config,
+ * falling back to {@link DEFAULT_ENTITIES_TO_SEND}.
+ */
+function resolveEntitiesToSend(cfg: Record<string, unknown> | null): SkipEntitiesToSendConfig {
+    const section = cfg?.entitiesToSend as Partial<SkipEntitiesToSendConfig> | undefined;
+    if (section) {
+        return {
+            excludeSchemas: section.excludeSchemas ?? DEFAULT_ENTITIES_TO_SEND.excludeSchemas,
+            includeEntitiesFromExcludedSchemas:
+                section.includeEntitiesFromExcludedSchemas ?? DEFAULT_ENTITIES_TO_SEND.includeEntitiesFromExcludedSchemas,
+        };
     }
     return DEFAULT_ENTITIES_TO_SEND;
 }
@@ -95,6 +119,7 @@ function loadEntitiesToSend(): SkipEntitiesToSendConfig {
  * Reads Skip client configuration from environment variables and skip.config.cjs.
  */
 export function getSkipConfig(): SkipClientConfig {
+    const fileCfg = loadSkipConfigFile();
     return {
         skipURL: process.env.ASK_SKIP_URL ?? DEFAULT_SKIP_BASE_URL,
         apiKey: process.env.ASK_SKIP_API_KEY,
@@ -105,7 +130,8 @@ export function getSkipConfig(): SkipClientConfig {
         publicUrl: process.env.MJAPI_PUBLIC_URL, // empty/undefined -> SDK falls back to baseUrl:port+rootPath
         graphqlPort: process.env.GRAPHQL_PORT ? parseInt(process.env.GRAPHQL_PORT, 10) : 4000,
         graphqlRootPath: process.env.GRAPHQL_ROOT_PATH ?? '/',
-        entitiesToSend: loadEntitiesToSend(),
+        entitiesToSend: resolveEntitiesToSend(fileCfg),
+        enableEval: fileCfg?.enableEval === true,
     };
 }
 
@@ -128,11 +154,14 @@ export async function resolveSkipApiKey(contextUser: UserInfo): Promise<string |
 }
 
 /**
- * Returns the database platform Skip should target, derived from DB_PROVIDER.
- * Replacement for MJServer's getDbType.
+ * Returns the database platform Skip should target, derived from DB_PLATFORM.
+ * Uses the same env var as MJ's resolveDbPlatformFromEnv() for consistency.
+ * Falls back to DB_PROVIDER for backward compatibility.
  */
 export function getDbType(): 'sqlserver' | 'postgresql' {
-    return process.env.DB_PROVIDER?.toLowerCase().includes('pg') || process.env.DB_PROVIDER?.toLowerCase() === 'postgresql'
-        ? 'postgresql'
-        : 'sqlserver';
+    const raw = (process.env.DB_PLATFORM ?? process.env.DB_PROVIDER ?? '').trim().toLowerCase();
+    if (raw === 'postgresql' || raw === 'pg') {
+        return 'postgresql';
+    }
+    return 'sqlserver';
 }
