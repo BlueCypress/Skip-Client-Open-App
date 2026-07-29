@@ -1,7 +1,7 @@
 /**
  * Skip metadata records that previously lived in MJ core metadata and now ship with
  * this app: the "Skip" AI Agent (DriverClass=SkipProxyAgent — this is what `@skip`
- * resolves to) and the "Skip" component registry (registry.askskip.ai, for rendering
+ * resolves to) and the "Skip" component registry (the Skip Brain API's /registry endpoint, for rendering
  * Skip's component artifacts).
  *
  * They are created via the entity framework in the in-process install hook rather than
@@ -15,6 +15,7 @@
 import { LogError, RunView } from '@memberjunction/core';
 import type { IMetadataProvider, UserInfo, BaseEntity } from '@memberjunction/core';
 import { MJAIAgentEntity, MJComponentRegistryEntity } from '@memberjunction/core-entities';
+import { DEFAULT_SKIP_BASE_URL } from './skip-config.js';
 
 /**
  * Stable IDs for the Skip agent and component registry records. These are the same IDs
@@ -113,11 +114,22 @@ async function ensureSkipComponentRegistry(
 ): Promise<void> {
     const rv = new RunView();
     const existing = await rv.RunView(
-        { EntityName: 'MJ: Component Registries', ExtraFilter: `ID='${SKIP_REGISTRY_ID}' OR Name='Skip'`, MaxRows: 1 },
+        { EntityName: 'MJ: Component Registries', ExtraFilter: `ID='${SKIP_REGISTRY_ID}' OR Name='Skip'`, MaxRows: 1, ResultType: 'entity_object' },
         contextUser,
     );
     if (existing.Success && existing.Results?.length) {
-        log('Skip component registry already present — skipping.');
+        const record = existing.Results[0] as MJComponentRegistryEntity;
+        const expectedURI = `${DEFAULT_SKIP_BASE_URL}/registry/api/v1`;
+        if (record.URI !== expectedURI) {
+            record.URI = expectedURI;
+            if (await record.Save()) {
+                log(`✓ Updated Skip component registry URI: ${record.URI}`);
+            } else {
+                LogError(`[skip-client] Failed to update Skip component registry URI: ${record.LatestResult?.Message ?? 'unknown error'}`);
+            }
+        } else {
+            log('Skip component registry already present — skipping.');
+        }
         return;
     }
 
@@ -126,13 +138,13 @@ async function ensureSkipComponentRegistry(
     reg.ID = SKIP_REGISTRY_ID;
     reg.Name = 'Skip';
     reg.Description = 'Skip SaaS AI Agent - Remote Registry for Component Retrieval';
-    reg.URI = 'https://registry.askskip.ai/';
+    reg.URI = `${DEFAULT_SKIP_BASE_URL}/registry/api/v1`;
     reg.Type = 'Public';
     reg.APIVersion = '1.0.0';
     reg.Status = 'Active';
 
     if (await reg.Save()) {
-        log('✓ Created the "Skip" component registry (registry.askskip.ai).');
+        log(`✓ Created the "Skip" component registry (${reg.URI}).`);
     } else {
         LogError(`[skip-client] Failed to create the Skip component registry: ${reg.LatestResult?.Message ?? 'unknown error'}`);
     }
