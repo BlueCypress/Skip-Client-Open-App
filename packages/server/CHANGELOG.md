@@ -1,5 +1,14 @@
 # @askskip/server
 
+## 0.0.8
+
+### Patch Changes
+
+- 4f79a46: Fix component registry URI: replace non-existent `registry.askskip.ai` with the actual production endpoint (`brain-prod.askskip.ai/registry/api/v1`). Existing installs self-heal the stale URI on next boot.
+- Updated dependencies [4f79a46]
+  - @askskip/types@0.0.8
+  - @askskip/core@0.0.8
+
 ## 0.0.7
 
 ### Patch Changes
