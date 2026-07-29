@@ -200,7 +200,7 @@ export class SkipMiddleware extends BaseServerMiddleware {
      * Derive REGISTRY_URI_OVERRIDE_SKIP and REGISTRY_API_KEY_SKIP from the Skip config
      * so operators don't need separate env vars for the component registry. MJ's
      * ComponentRegistryResolver reads these to override the production registry URI
-     * (stored in the DB as https://registry.askskip.ai/) and to authenticate.
+     * (stored in the DB as the production registry URI) and to authenticate.
      *
      * Only sets them when ASK_SKIP_URL points at a non-production Skip instance —
      * production uses the DB-stored URI directly and resolves the API key from the
