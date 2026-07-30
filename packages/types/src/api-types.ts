@@ -19,6 +19,7 @@ import type { SkipQueryInfo, SkipQueryCatalogEntry } from './query-types.js';
 import type { SkipAPIRequestAPIKey } from './auth-types.js';
 import type { SkipAPIArtifact } from './artifact-types.js';
 import type { SkipAPIAgentNote, SkipAPIAgentNoteType } from './agent-types.js';
+import type { SkipErrorDetail } from './error-types.js';
 import type { DatabasePlatform } from '@memberjunction/sql-dialect';
 
 /**
@@ -247,10 +248,6 @@ export class SkipAPIResponse {
      */
     success: boolean;
     /**
-     * This property is only used if success is false, and contains an error message that describes the reason for the failure
-     */
-    error: string;
-    /**
      * The Skip API server response phase, defined within the SkipResponsePhase type
      */
     responsePhase: SkipResponsePhase;
@@ -271,6 +268,13 @@ export class SkipAPIResponse {
      * When user responds, the client passes the payload back in the next SkipAPIRequest.payload field.
      */
     payload?: Record<string, any>;
+
+    /**
+     * Structured error information. Present when `success` is false.
+     * Provides machine-actionable error codes, retry guidance, and user-facing
+     * suggested actions. The human-readable error message is in `errorDetail.message`.
+     */
+    errorDetail?: SkipErrorDetail;
 }
 
 /**

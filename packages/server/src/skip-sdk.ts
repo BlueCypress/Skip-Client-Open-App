@@ -21,7 +21,10 @@ import {
     SkipAPIAgentNoteType,
     SkipAPIArtifact,
     SkipAPIArtifactVersion,
-    SkipAPIArtifactType
+    SkipAPIArtifactType,
+    SkipErrorCode,
+    SkipRetryAction,
+    SkipErrorDetail,
 } from '@askskip/types';
 import { DataContext } from '@memberjunction/data-context';
 import { IMetadataProvider, UserInfo, LogStatus, LogError, Metadata, RunQuery, RunView, EntityInfo, EntityFieldInfo, EntityFieldValueInfo, DatabaseProviderBase } from '@memberjunction/core';
@@ -30,7 +33,7 @@ import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { gzip as gzipCompress, createGunzip } from 'zlib';
 import { getSkipConfig, getDbType, resolveSkipApiKey } from '@askskip/core';
-import { getSkipCallbackKey } from './skip-callback-key-provisioner.js';
+import { getSkipCallbackKey, resetCallbackKeyProvisioning } from './skip-callback-key-provisioner.js';
 import { GetAIAPIKey } from '@memberjunction/ai';
 import { AIEngine } from '@memberjunction/aiengine';
 import { CopyScalarsAndArrays, UUIDsEqual } from '@memberjunction/global';
@@ -145,6 +148,13 @@ export interface SkipCallOptions {
      * correlation and debugging.
      */
     externalReferenceID?: string;
+
+    /**
+     * Internal flag to prevent infinite retry loops during callback key re-provisioning.
+     * Set automatically by the SDK — callers should not set this.
+     * @internal
+     */
+    _isCallbackKeyRetry?: boolean;
 }
 
 /**
@@ -170,6 +180,13 @@ export interface SkipCallResult {
      * Error message if failed
      */
     error?: string;
+
+    /**
+     * Structured error detail from the Skip API response, if available.
+     * Provides machine-actionable error codes and retry guidance.
+     * Prefer this over parsing the `error` string for programmatic handling.
+     */
+    errorDetail?: SkipErrorDetail;
 
     /**
      * All streaming responses received (including intermediate status updates)
@@ -326,13 +343,29 @@ export class SkipSDK {
 
                 // Check if Skip itself reported an error (success: false in the response body)
                 if (finalResponse.success === false) {
-                    const skipError = finalResponse.error || 'Skip API returned an error response';
-                    LogError(`[SkipSDK] Skip API error: ${skipError}`);
+                    const detail = finalResponse.errorDetail;
+                    const skipError = detail?.message || 'Skip API returned an error response';
+                    LogError(`[SkipSDK] Skip API error: ${skipError}` +
+                        (detail ? ` [${detail.type}/${detail.code}]` : ''));
+
+                    // Handle callback key re-provisioning: if Skip reports the callback
+                    // key is invalid and suggests re-provisioning, reset the provisioner
+                    // state and retry exactly once. The retry flag on options prevents
+                    // infinite loops.
+                    if (detail?.code === SkipErrorCode.invalid_callback_key
+                        && detail.retryAction === SkipRetryAction.reprovision_and_retry
+                        && !options._isCallbackKeyRetry) {
+                        LogStatus('[SkipSDK] Callback key invalid — revoking old key and re-provisioning');
+                        await resetCallbackKeyProvisioning();
+                        return this.chat({ ...options, _isCallbackKeyRetry: true });
+                    }
+
                     return {
                         success: false,
                         response: finalResponse,
                         responsePhase: finalResponse.responsePhase,
                         error: skipError,
+                        errorDetail: detail,
                         allResponses: responses
                     };
                 }

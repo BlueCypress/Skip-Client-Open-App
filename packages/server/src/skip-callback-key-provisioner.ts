@@ -17,6 +17,7 @@
 
 import { CompositeKey, LogError, LogStatus, Metadata, RunView, UserInfo } from '@memberjunction/core';
 import { APIKeysEngineBase, GetAPIKeyEngine } from '@memberjunction/api-keys';
+import { MJAPIKeyEntity } from '@memberjunction/core-entities';
 import { UserCache } from '@memberjunction/sqlserver-dataprovider';
 import { getSkipConfig } from '@askskip/core';
 
@@ -76,6 +77,48 @@ let createdRawKey: string | null = null;
  */
 function buildKeyLabel(): string {
     return `Skip Callback: ${getSkipConfig().skipURL}`;
+}
+
+/**
+ * Deletes the existing callback key and resets provisioning state so the next
+ * call to `getSkipCallbackKey()` creates a fresh key and returns its raw value
+ * for Skip to store.
+ *
+ * Called by SkipSDK when the Skip server reports the callback key is invalid
+ * (`invalid_callback_key` error code). The old key is deleted via the entity
+ * framework — all child rows (scopes, usage logs) are cleaned up by cascading
+ * FKs in the database, so no orphaned data is left behind.
+ */
+export async function resetCallbackKeyProvisioning(): Promise<void> {
+    try {
+        const systemUser = UserCache.Instance.GetSystemUser();
+        if (systemUser) {
+            const label = buildKeyLabel();
+            const serviceAccount = UserCache.Instance.Users.find(
+                u => u.Email.toLowerCase() === SKIP_SERVICE_EMAIL
+            );
+            if (serviceAccount) {
+                const existingKey = await findExistingKey(serviceAccount.ID, label, systemUser);
+                if (existingKey) {
+                    const md = new Metadata();
+                    const keyEntity = await md.GetEntityObject<MJAPIKeyEntity>('MJ: API Keys', systemUser);
+                    const loaded = await keyEntity.Load(existingKey.ID);
+                    if (loaded && await keyEntity.Delete()) {
+                        LogStatus(`[SkipCallbackKeyProvisioner] Deleted old callback key (ID: ${existingKey.ID}) for re-provisioning`);
+                    } else {
+                        LogError(`[SkipCallbackKeyProvisioner] Failed to delete old callback key (ID: ${existingKey.ID})`);
+                    }
+                }
+            }
+        }
+    } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        LogError(`[SkipCallbackKeyProvisioner] Error deleting old key during reset: ${msg}`);
+    }
+
+    // Reset in-memory state so provisionInner() runs fresh
+    provisioningComplete = false;
+    createdRawKey = null;
 }
 
 /**
