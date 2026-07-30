@@ -335,7 +335,7 @@ export class SkipProxyAgent extends BaseAgent {
             ?.filter(m => m.role === 'system')
             .pop();
 
-        const errorDetail = apiResponse.error
+        const errorDetail = apiResponse.errorDetail?.message
             || lastSystemMessage?.content
             || 'Skip returned an error with no details';
 
