@@ -1,5 +1,14 @@
 # @askskip/server
 
+## 0.0.9
+
+### Patch Changes
+
+- fa69105: Fix component registry URI: use `/registry` (not `/registry/api/v1`) as the base URI — MJ's ComponentRegistryClient already appends `/api/v1/...` paths, so the previous value doubled the prefix. Centralizes URI construction in `getSkipRegistryURI()` to prevent future divergence. Existing installs self-heal the stale URI on next boot.
+- Updated dependencies [fa69105]
+  - @askskip/types@0.0.9
+  - @askskip/core@0.0.9
+
 ## 0.0.8
 
 ### Patch Changes
