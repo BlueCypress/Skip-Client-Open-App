@@ -15,6 +15,15 @@ import type { UserInfo } from '@memberjunction/core';
 export const DEFAULT_SKIP_BASE_URL = 'https://brain-prod.askskip.ai';
 
 /**
+ * Builds the component registry base URI for a given Skip API base URL.
+ * MJ's ComponentRegistryClient appends `/api/v1/...` paths itself, so the
+ * base URI must end at `/registry` — NOT `/registry/api/v1`.
+ */
+export function getSkipRegistryURI(skipBaseURL: string = DEFAULT_SKIP_BASE_URL): string {
+    return `${skipBaseURL.replace(/\/+$/, '')}/registry`;
+}
+
+/**
  * Entity-filtering configuration loaded from `skip.config.cjs` (or defaults).
  * Controls which MJ entities are included in the metadata payload sent to the
  * Skip Brain API on each request.

@@ -18,7 +18,7 @@ import type { Application, Request, Response, RequestHandler } from 'express';
 import { Router, json as jsonBodyParser } from 'express';
 import { GetAPIKeyEngine } from '@memberjunction/api-keys';
 import { UserCache } from '@memberjunction/sqlserver-dataprovider';
-import { ensureSkipRecords, getSkipConfig, DEFAULT_SKIP_BASE_URL } from '@askskip/core';
+import { ensureSkipRecords, getSkipConfig, DEFAULT_SKIP_BASE_URL, getSkipRegistryURI } from '@askskip/core';
 import { SkipSDK } from './skip-sdk.js';
 
 // Side-effect import: ensure SkipProxyAgent's @RegisterClass(BaseAgent, 'SkipProxyAgent') runs.
@@ -212,7 +212,7 @@ export class SkipMiddleware extends BaseServerMiddleware {
 
         // Derive registry URI: only override when pointing at non-production Skip
         if (skipURL && skipURL !== DEFAULT_SKIP_BASE_URL && !process.env.REGISTRY_URI_OVERRIDE_SKIP) {
-            process.env.REGISTRY_URI_OVERRIDE_SKIP = `${skipURL}/registry/api/v1`;
+            process.env.REGISTRY_URI_OVERRIDE_SKIP = getSkipRegistryURI(skipURL);
             LogStatus(`[skip-client] Derived REGISTRY_URI_OVERRIDE_SKIP from ASK_SKIP_URL: ${process.env.REGISTRY_URI_OVERRIDE_SKIP}`);
         }
 
