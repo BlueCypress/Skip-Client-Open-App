@@ -1,5 +1,14 @@
 # @askskip/server
 
+## 0.0.10
+
+### Patch Changes
+
+- eaed166: Add structured error contract (SkipErrorDetail) to SkipAPIResponse, replacing the flat error string with machine-actionable error codes, retry guidance, and automatic callback key re-provisioning on invalid_callback_key errors.
+- Updated dependencies [eaed166]
+  - @askskip/types@0.0.10
+  - @askskip/core@0.0.10
+
 ## 0.0.9
 
 ### Patch Changes
