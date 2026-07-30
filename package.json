@@ -16,6 +16,7 @@
     "change": "changeset",
     "version": "changeset version",
     "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
     "watch:types": "npm run watch -w @askskip/types",
     "watch:core": "npm run watch -w @askskip/core",
     "watch:server": "npm run watch -w @askskip/server",

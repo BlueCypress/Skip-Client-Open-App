@@ -18,7 +18,7 @@ import type { Application, Request, Response, RequestHandler } from 'express';
 import { Router, json as jsonBodyParser } from 'express';
 import { GetAPIKeyEngine } from '@memberjunction/api-keys';
 import { UserCache } from '@memberjunction/sqlserver-dataprovider';
-import { ensureSkipRecords, getSkipConfig, DEFAULT_SKIP_BASE_URL, getSkipRegistryURI } from '@askskip/core';
+import { ensureSkipRecords, getSkipConfig, DEFAULT_SKIP_BASE_URL, getSkipRegistryURI, resolveSkipApiKey } from '@askskip/core';
 import { SkipSDK } from './skip-sdk.js';
 
 // Side-effect import: ensure SkipProxyAgent's @RegisterClass(BaseAgent, 'SkipProxyAgent') runs.
@@ -57,7 +57,7 @@ export class SkipMiddleware extends BaseServerMiddleware {
             // config so operators don't have to set them separately. MJ's ComponentRegistryResolver
             // reads these env vars to override the production registry URI and authenticate.
             // Only set if not already explicitly configured (env vars win over derived values).
-            this.deriveRegistryEnvVars();
+            await this.deriveRegistryEnvVars();
 
             const engine = GetAPIKeyEngine();
             const scopes = engine.Scopes ?? [];
@@ -206,7 +206,7 @@ export class SkipMiddleware extends BaseServerMiddleware {
      * production uses the DB-stored URI directly and resolves the API key from the
      * credential store. Explicit env vars always win (not overwritten).
      */
-    private deriveRegistryEnvVars(): void {
+    private async deriveRegistryEnvVars(): Promise<void> {
         const config = getSkipConfig();
         const skipURL = config.skipURL?.replace(/\/+$/, '');
 
@@ -216,10 +216,21 @@ export class SkipMiddleware extends BaseServerMiddleware {
             LogStatus(`[skip-client] Derived REGISTRY_URI_OVERRIDE_SKIP from ASK_SKIP_URL: ${process.env.REGISTRY_URI_OVERRIDE_SKIP}`);
         }
 
-        // Derive registry API key: reuse the Skip API key if no explicit registry key is set
-        if (config.apiKey && !process.env.REGISTRY_API_KEY_SKIP) {
-            process.env.REGISTRY_API_KEY_SKIP = config.apiKey;
-            LogStatus('[skip-client] Derived REGISTRY_API_KEY_SKIP from ASK_SKIP_API_KEY.');
+        // Derive registry API key: reuse the Skip API key if no explicit registry key is set.
+        // The key may live only in the encrypted credential store (not in ASK_SKIP_API_KEY env),
+        // so fall back to resolveSkipApiKey() which checks the credential store.
+        if (!process.env.REGISTRY_API_KEY_SKIP) {
+            let apiKey = config.apiKey;
+            if (!apiKey) {
+                const systemUser = UserCache.Instance.GetSystemUser();
+                if (systemUser) {
+                    apiKey = await resolveSkipApiKey(systemUser);
+                }
+            }
+            if (apiKey) {
+                process.env.REGISTRY_API_KEY_SKIP = apiKey;
+                LogStatus('[skip-client] Derived REGISTRY_API_KEY_SKIP from Skip API key.');
+            }
         }
     }
 }
