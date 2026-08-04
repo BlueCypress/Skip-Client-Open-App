@@ -15,7 +15,7 @@
 import { LogError, RunView } from '@memberjunction/core';
 import type { IMetadataProvider, UserInfo, BaseEntity } from '@memberjunction/core';
 import { MJAIAgentEntity, MJComponentRegistryEntity } from '@memberjunction/core-entities';
-import { getSkipRegistryURI } from './skip-config.js';
+import { getConfiguredSkipRegistryURI } from './skip-config.js';
 
 /**
  * Stable IDs for the Skip agent and component registry records. These are the same IDs
@@ -119,7 +119,7 @@ async function ensureSkipComponentRegistry(
     );
     if (existing.Success && existing.Results?.length) {
         const record = existing.Results[0] as MJComponentRegistryEntity;
-        const expectedURI = getSkipRegistryURI();
+        const expectedURI = getConfiguredSkipRegistryURI();
         if (record.URI !== expectedURI) {
             record.URI = expectedURI;
             if (await record.Save()) {
@@ -138,7 +138,7 @@ async function ensureSkipComponentRegistry(
     reg.ID = SKIP_REGISTRY_ID;
     reg.Name = 'Skip';
     reg.Description = 'Skip SaaS AI Agent - Remote Registry for Component Retrieval';
-    reg.URI = getSkipRegistryURI();
+    reg.URI = getConfiguredSkipRegistryURI();
     reg.Type = 'Public';
     reg.APIVersion = '1.0.0';
     reg.Status = 'Active';

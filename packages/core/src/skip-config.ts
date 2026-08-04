@@ -24,6 +24,29 @@ export function getSkipRegistryURI(skipBaseURL: string = DEFAULT_SKIP_BASE_URL):
 }
 
 /**
+ * The registry URI the instance is actually configured for — the value setup
+ * should persist on the Component Registry record. Resolution order matches
+ * what MJ's ComponentRegistryClient effectively honors at runtime:
+ *
+ *  1. `REGISTRY_URI_OVERRIDE_SKIP` — an explicit registry override wins outright.
+ *  2. `ASK_SKIP_URL` (via {@link getSkipConfig}) — a non-production brain implies
+ *     that brain's registry.
+ *  3. The production default.
+ *
+ * Without this, setup called `getSkipRegistryURI()` bare and stamped the
+ * production URI into the tenant's DB even when the environment pointed the
+ * whole install at a different brain — and re-stamped it on every upgrade,
+ * reverting any manual correction.
+ */
+export function getConfiguredSkipRegistryURI(): string {
+    const override = process.env.REGISTRY_URI_OVERRIDE_SKIP?.trim();
+    if (override) {
+        return override.replace(/\/+$/, '');
+    }
+    return getSkipRegistryURI(getSkipConfig().skipURL);
+}
+
+/**
  * Entity-filtering configuration loaded from `skip.config.cjs` (or defaults).
  * Controls which MJ entities are included in the metadata payload sent to the
  * Skip Brain API on each request.
