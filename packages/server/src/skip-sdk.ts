@@ -268,11 +268,21 @@ export class SkipSDK {
      * so each request reaches its own database connection.
      */
     public get Provider(): IMetadataProvider {
-        return this.config.provider ?? (new Metadata() as unknown as IMetadataProvider);
+        // NOTE: `Metadata.Provider` (static) is the provider. A `Metadata` *instance*
+        // is only a facade over it and has no ExecuteSQL/RunView surface — returning
+        // one here (behind an `as unknown as` cast) is what made every
+        // getFieldDistinctValues() call fail with "provider.ExecuteSQL is not a function".
+        return this.config.provider ?? Metadata.Provider;
     }
     public set Provider(value: IMetadataProvider | null) {
         this.config.provider = value ?? undefined;
     }
+
+    /**
+     * Upper bound on distinct values fetched per field for schema enrichment.
+     * See {@link buildDistinctValuesSQL} for why this is capped.
+     */
+    private static readonly MAX_DISTINCT_FIELD_VALUES = 500;
 
     // Static cache for Skip entities (shared across all instances)
     private static __skipEntitiesCache$: BehaviorSubject<Promise<EntityInfo[]> | null> = new BehaviorSubject<Promise<EntityInfo[]> | null>(null);
@@ -1258,18 +1268,54 @@ export class SkipSDK {
     }
 
     /**
+     * Builds the platform-specific `SELECT DISTINCT` used to enrich a field's
+     * possible values, with identifiers quoted and the row count capped.
+     *
+     * The cap matters: this runs for every eligible field on every entity cache
+     * refresh, and the result is serialized into each Skip request payload. An
+     * uncapped DISTINCT over a high-cardinality column on a large base view is
+     * both a slow query and a large payload, so a field with more than
+     * {@link MAX_DISTINCT_FIELD_VALUES} values is not usefully enumerable anyway.
+     */
+    private buildDistinctValuesSQL(f: EntityFieldInfo): string {
+        const limit = SkipSDK.MAX_DISTINCT_FIELD_VALUES;
+        if (getDbType() === 'postgresql') {
+            return `SELECT DISTINCT "${f.Name}" FROM "${f.SchemaName}"."${f.BaseView}" LIMIT ${limit}`;
+        }
+        return `SELECT DISTINCT TOP (${limit}) [${f.Name}] FROM [${f.SchemaName}].[${f.BaseView}]`;
+    }
+
+    /**
      * Gets distinct values for a field from the database.
      * Returns EntityFieldValueInfo objects.
      */
     private async getFieldDistinctValues(f: EntityFieldInfo): Promise<EntityFieldValueInfo[]> {
         try {
             // Use this SDK instance's bound provider so multi-tenant servers route the SQL
-            // through the right connection. ExecuteSQL works on both SQL Server and PostgreSQL.
-            const provider = this.Provider as unknown as DatabaseProviderBase;
-            const sql = `SELECT DISTINCT ${f.Name} FROM ${f.SchemaName}.${f.BaseView}`;
-            const rows = await provider.ExecuteSQL<Record<string, unknown>>(sql);
+            // through the right connection. ExecuteSQL works on both SQL Server and PostgreSQL,
+            // but it is declared on DatabaseProviderBase rather than IMetadataProvider — so
+            // narrow rather than cast. A provider without direct SQL support (e.g. a
+            // client-side GraphQL provider) is a real configuration state, not an error,
+            // but it must be visible instead of silently yielding empty value lists.
+            const provider = this.Provider;
+            if (!(provider instanceof DatabaseProviderBase)) {
+                LogError(
+                    `[SkipSDK] Provider (${provider?.constructor?.name ?? 'unknown'}) does not support ` +
+                    `direct SQL — skipping distinct value enrichment for ${f.SchemaName}.${f.BaseView}.${f.Name}. ` +
+                    'Skip will receive this field without its possible values.'
+                );
+                return [];
+            }
+
+            const rows = await provider.ExecuteSQL<Record<string, unknown>>(this.buildDistinctValuesSQL(f));
             if (!rows || rows.length === 0) {
                 return [];
+            }
+            if (rows.length === SkipSDK.MAX_DISTINCT_FIELD_VALUES) {
+                LogStatus(
+                    `[SkipSDK] ${f.SchemaName}.${f.BaseView}.${f.Name} hit the ` +
+                    `${SkipSDK.MAX_DISTINCT_FIELD_VALUES}-value cap — the list sent to Skip is truncated.`
+                );
             }
             return rows.map((r) => new EntityFieldValueInfo({ Value: r[f.Name] as string, Code: r[f.Name] as string }));
         }
