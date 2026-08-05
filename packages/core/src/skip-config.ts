@@ -14,36 +14,66 @@ import type { UserInfo } from '@memberjunction/core';
 /** Default Skip API base URL. Override with ASK_SKIP_URL env var for non-production environments. */
 export const DEFAULT_SKIP_BASE_URL = 'https://brain-prod.askskip.ai';
 
+/** Removes any trailing slashes so URIs concatenate predictably. */
+function stripTrailingSlashes(url: string): string {
+    return url.replace(/\/+$/, '');
+}
+
 /**
  * Builds the component registry base URI for a given Skip API base URL.
  * MJ's ComponentRegistryClient appends `/api/v1/...` paths itself, so the
  * base URI must end at `/registry` — NOT `/registry/api/v1`.
  */
 export function getSkipRegistryURI(skipBaseURL: string = DEFAULT_SKIP_BASE_URL): string {
-    return `${skipBaseURL.replace(/\/+$/, '')}/registry`;
+    return `${stripTrailingSlashes(skipBaseURL)}/registry`;
 }
 
 /**
- * The registry URI the instance is actually configured for — the value setup
- * should persist on the Component Registry record. Resolution order matches
- * what MJ's ComponentRegistryClient effectively honors at runtime:
+ * Environment variable MJ reads to override the "Skip" component registry's URI.
  *
- *  1. `REGISTRY_URI_OVERRIDE_SKIP` — an explicit registry override wins outright.
- *  2. `ASK_SKIP_URL` (via {@link getSkipConfig}) — a non-production brain implies
- *     that brain's registry.
- *  3. The production default.
- *
- * Without this, setup called `getSkipRegistryURI()` bare and stamped the
- * production URI into the tenant's DB even when the environment pointed the
- * whole install at a different brain — and re-stamped it on every upgrade,
- * reverting any manual correction.
+ * The name is not ours to choose: `ComponentRegistryResolver.getRegistryUri()` derives it
+ * from the registry record's `Name` — uppercased with every non-alphanumeric character
+ * replaced by an underscore. Our record is named `Skip` (see `SKIP_REGISTRY_ID` in
+ * skip-records.ts), so the variable is `REGISTRY_URI_OVERRIDE_SKIP`. Renaming the record
+ * would rename this variable.
  */
-export function getConfiguredSkipRegistryURI(): string {
-    const override = process.env.REGISTRY_URI_OVERRIDE_SKIP?.trim();
+export const SKIP_REGISTRY_URI_OVERRIDE_ENV_VAR = 'REGISTRY_URI_OVERRIDE_SKIP';
+
+/**
+ * Resolves the component registry URI this instance is actually configured for — the value
+ * setup should persist on the Component Registry record. Layered so a developer can point the
+ * registry somewhere other than the brain, without that being the common case:
+ *
+ *  1. `REGISTRY_URI_OVERRIDE_SKIP` — an explicit registry override wins outright, letting the
+ *     registry live at a different host than the chat endpoint.
+ *  2. `ASK_SKIP_URL` — with no explicit override, the configured brain serves its own registry,
+ *     so the same URL backs both chat and components.
+ *  3. `fallbackURI` — the value already on the Component Registry record, which is the
+ *     production default on any instance that has never overridden it.
+ *
+ * This mirrors what MJ honors at runtime (`REGISTRY_URI_OVERRIDE_SKIP`, then the stored `URI`);
+ * `ASK_SKIP_URL` slots in between because {@link SkipMiddleware} derives the override from it
+ * at boot when it points off production.
+ *
+ * @param fallbackURI URI currently stored on the registry record, if any. Omit when creating a
+ *                    record from scratch — the production default is used instead.
+ */
+export function getConfiguredSkipRegistryURI(fallbackURI?: string | null): string {
+    const override = process.env[SKIP_REGISTRY_URI_OVERRIDE_ENV_VAR]?.trim();
     if (override) {
-        return override.replace(/\/+$/, '');
+        return stripTrailingSlashes(override);
     }
-    return getSkipRegistryURI(getSkipConfig().skipURL);
+
+    // Read ASK_SKIP_URL directly rather than through getSkipConfig(): only the URL matters here,
+    // and getSkipConfig() also walks the filesystem for skip.config.cjs — a require() that would
+    // let a malformed config file break registry resolution.
+    const skipURL = process.env.ASK_SKIP_URL?.trim();
+    if (skipURL) {
+        return getSkipRegistryURI(skipURL);
+    }
+
+    const existing = fallbackURI?.trim();
+    return existing ? stripTrailingSlashes(existing) : getSkipRegistryURI();
 }
 
 /**

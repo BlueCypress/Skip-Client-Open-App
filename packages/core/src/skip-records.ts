@@ -119,7 +119,11 @@ async function ensureSkipComponentRegistry(
     );
     if (existing.Success && existing.Results?.length) {
         const record = existing.Results[0] as MJComponentRegistryEntity;
-        const expectedURI = getConfiguredSkipRegistryURI();
+        // Pass the stored URI as the fallback: with no registry/brain env vars set, the row is
+        // left exactly as it is. Setup runs again on every upgrade and on every MJAPI boot
+        // (SkipMiddleware self-heal), so resolving to a bare default here would revert an
+        // operator's manual correction each time.
+        const expectedURI = getConfiguredSkipRegistryURI(record.URI);
         if (record.URI !== expectedURI) {
             record.URI = expectedURI;
             if (await record.Save()) {
