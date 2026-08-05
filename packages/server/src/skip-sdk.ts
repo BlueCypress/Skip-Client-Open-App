@@ -33,7 +33,12 @@ import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { gzip as gzipCompress, createGunzip } from 'zlib';
 import { getSkipConfig, getDbType, resolveSkipApiKey } from '@askskip/core';
-import { getSkipCallbackKey, resetCallbackKeyProvisioning } from './skip-callback-key-provisioner.js';
+import {
+    getSkipCallbackKey,
+    resetCallbackKeyProvisioning,
+    confirmCallbackKeyDelivered,
+    discardUnconfirmedCallbackKey,
+} from './skip-callback-key-provisioner.js';
 import { GetAIAPIKey } from '@memberjunction/ai';
 import { AIEngine } from '@memberjunction/aiengine';
 import { CopyScalarsAndArrays, UUIDsEqual } from '@memberjunction/global';
@@ -299,6 +304,23 @@ export class SkipSDK {
     async chat(options: SkipCallOptions): Promise<SkipCallResult> {
         LogStatus(`[SkipSDK] Sending request to Skip API: ${this.config.apiUrl}`);
 
+        // Resolve the Skip API key before anything else. Callers that go through
+        // SkipProxyAgent already do this, but the eval entry points construct a bare
+        // SkipSDK and would otherwise never consult the credential store.
+        await this.ensureConfig(options.contextUser);
+
+        // Fail before building the request, not after. buildSkipRequest() provisions the
+        // scoped callback key as a side effect, and a request with no Skip API key is
+        // rejected at the edge before Skip reads the body — which used to create a key
+        // Skip never received, wedging every later request. Refusing here keeps that
+        // key from being minted at all, and reports the real problem instead of a 401.
+        if (!this.config.apiKey) {
+            const error = 'No Skip API key is configured. Set ASK_SKIP_API_KEY in the MJAPI environment, ' +
+                'or store a "Skip API Key" credential, then restart MJAPI.';
+            LogError(`[SkipSDK] ${error}`);
+            return { success: false, error };
+        }
+
         try {
             // Build the Skip API request
             const skipRequest = await this.buildSkipRequest(options);
@@ -341,6 +363,13 @@ export class SkipSDK {
             if (responses && responses.length > 0) {
                 const finalResponse = responses[responses.length - 1].value as SkipAPIResponse;
 
+                // A parsed final response means Skip read the request body, so any newly
+                // provisioned callback key in it was stored — Skip resolves the callback
+                // credential before running any workflow, so a Skip-side error still
+                // implies receipt. Confirming here is what makes the key safe to keep
+                // across a restart; anything short of this leaves it discardable.
+                confirmCallbackKeyDelivered();
+
                 // Check if Skip itself reported an error (success: false in the response body)
                 if (finalResponse.success === false) {
                     const detail = finalResponse.errorDetail;
@@ -377,6 +406,8 @@ export class SkipSDK {
                     allResponses: responses
                 };
             } else {
+                // Nothing came back, so there is no evidence Skip read the request.
+                await discardUnconfirmedCallbackKey();
                 return {
                     success: false,
                     error: 'No response received from Skip API'
@@ -385,6 +416,12 @@ export class SkipSDK {
 
         } catch (error) {
             LogError(`[SkipSDK] Error calling Skip API: ${error}`);
+
+            // The request failed at or before the edge (HTTP error, socket failure,
+            // malformed stream), so Skip never read the body. If this request was
+            // carrying a brand-new callback key, drop it — keeping the row would
+            // outlive the raw value and wedge every request after the next restart.
+            await discardUnconfirmedCallbackKey();
 
             // Provide user-friendly error messages for common failures
             const rawError = error instanceof Error ? error.message : String(error);

@@ -72,6 +72,21 @@ export let provisioningComplete = false;
 let createdRawKey: string | null = null;
 
 /**
+ * Whether Skip is known to hold the current key.
+ *
+ * True when we found a pre-existing key row (Skip received it in an earlier
+ * lifetime), and set for a newly created key only once a request carrying it
+ * actually reached Skip — see {@link confirmCallbackKeyDelivered}.
+ *
+ * While this is false the key row exists locally but Skip may have never seen
+ * it. That gap is unrecoverable across a restart, because the raw value is
+ * hashed on write: the row would make the next lifetime believe Skip already
+ * holds a key it never received. {@link discardUnconfirmedCallbackKey} closes
+ * the gap by deleting the row when delivery fails.
+ */
+let deliveryConfirmed = false;
+
+/**
  * Builds the label for a Skip callback key scoped to a specific Skip host.
  * Example: "Skip Callback: https://skip.example.com"
  */
@@ -90,35 +105,103 @@ function buildKeyLabel(): string {
  * FKs in the database, so no orphaned data is left behind.
  */
 export async function resetCallbackKeyProvisioning(): Promise<void> {
-    try {
-        const systemUser = UserCache.Instance.GetSystemUser();
-        if (systemUser) {
-            const label = buildKeyLabel();
-            const serviceAccount = UserCache.Instance.Users.find(
-                u => u.Email.toLowerCase() === SKIP_SERVICE_EMAIL
-            );
-            if (serviceAccount) {
-                const existingKey = await findExistingKey(serviceAccount.ID, label, systemUser);
-                if (existingKey) {
-                    const md = new Metadata();
-                    const keyEntity = await md.GetEntityObject<MJAPIKeyEntity>('MJ: API Keys', systemUser);
-                    const loaded = await keyEntity.Load(existingKey.ID);
-                    if (loaded && await keyEntity.Delete()) {
-                        LogStatus(`[SkipCallbackKeyProvisioner] Deleted old callback key (ID: ${existingKey.ID}) for re-provisioning`);
-                    } else {
-                        LogError(`[SkipCallbackKeyProvisioner] Failed to delete old callback key (ID: ${existingKey.ID})`);
-                    }
-                }
-            }
-        }
-    } catch (error: unknown) {
-        const msg = error instanceof Error ? error.message : String(error);
-        LogError(`[SkipCallbackKeyProvisioner] Error deleting old key during reset: ${msg}`);
-    }
+    await deleteExistingCallbackKey('re-provisioning');
 
     // Reset in-memory state so provisionInner() runs fresh
     provisioningComplete = false;
     createdRawKey = null;
+    deliveryConfirmed = false;
+}
+
+/**
+ * Records that a request carrying the newly created raw key reached Skip, so the
+ * key row is safe to keep across restarts.
+ *
+ * "Reached Skip" means Skip parsed the request body — a Skip-side workflow error
+ * still counts, because `resolveCallbackCredential` runs before any workflow does.
+ * What does not count is a failure at or before the edge (a 401 on the Skip API
+ * key, a network error, an empty response), where the body was never read.
+ *
+ * No-op when there is nothing pending: either no key was created this lifetime,
+ * or delivery was already confirmed.
+ */
+export function confirmCallbackKeyDelivered(): void {
+    if (createdRawKey && !deliveryConfirmed) {
+        deliveryConfirmed = true;
+        LogStatus('[SkipCallbackKeyProvisioner] Skip acknowledged the new callback key — key retained');
+    }
+}
+
+/**
+ * Deletes a just-created key whose delivery to Skip was never confirmed, and
+ * resets provisioning state so the next request provisions and sends a fresh one.
+ *
+ * Without this, a key created for a request that failed before Skip read the body
+ * leaves a row that outlives the raw value. After a restart the client finds that
+ * row, concludes "Skip already has it", sends nothing, and every subsequent
+ * request fails with Skip reporting no callback key — unrecoverable without
+ * deleting the row by hand.
+ *
+ * Deliberately narrow: does nothing when the key was created in an earlier
+ * lifetime or delivery was already confirmed, so ordinary Skip errors never
+ * destroy a working key.
+ *
+ * @returns true if an unconfirmed key was discarded.
+ */
+export async function discardUnconfirmedCallbackKey(): Promise<boolean> {
+    if (!createdRawKey || deliveryConfirmed) {
+        return false;
+    }
+
+    LogError('[SkipCallbackKeyProvisioner] Request carrying the new callback key did not reach Skip — ' +
+        'discarding the unconfirmed key so the next request provisions a fresh one');
+    await deleteExistingCallbackKey('unconfirmed delivery');
+
+    provisioningComplete = false;
+    createdRawKey = null;
+    deliveryConfirmed = false;
+    return true;
+}
+
+/**
+ * Deletes the callback key row for this Skip host, if one exists. Child rows
+ * (scopes, usage logs) are cleaned up by cascading FKs, so no orphaned data is
+ * left behind. Never throws — callers reset in-memory state regardless, and a
+ * stale row is recoverable on the next pass while a thrown error is not.
+ *
+ * @param reason - Included in log output to distinguish rotation from discard.
+ */
+async function deleteExistingCallbackKey(reason: string): Promise<void> {
+    try {
+        const systemUser = UserCache.Instance.GetSystemUser();
+        if (!systemUser) {
+            return;
+        }
+
+        const serviceAccount = UserCache.Instance.Users.find(
+            u => u.Email.toLowerCase() === SKIP_SERVICE_EMAIL
+        );
+        if (!serviceAccount) {
+            return;
+        }
+
+        const existingKey = await findExistingKey(serviceAccount.ID, buildKeyLabel(), systemUser);
+        if (!existingKey) {
+            return;
+        }
+
+        const md = new Metadata();
+        const keyEntity = await md.GetEntityObject<MJAPIKeyEntity>('MJ: API Keys', systemUser);
+        const loaded = await keyEntity.Load(existingKey.ID);
+        if (loaded && await keyEntity.Delete()) {
+            LogStatus(`[SkipCallbackKeyProvisioner] Deleted callback key (ID: ${existingKey.ID}) — ${reason}`);
+        } else {
+            LogError(`[SkipCallbackKeyProvisioner] Failed to delete callback key (ID: ${existingKey.ID}) — ${reason}`);
+        }
+    } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        LogError(`[SkipCallbackKeyProvisioner] Error deleting callback key (${reason}): ${msg}`);
+    }
 }
 
 /**
@@ -186,14 +269,18 @@ async function provisionInner(): Promise<string | null> {
 
             provisioningComplete = true;
             createdRawKey = null; // Signal: don't send key, Skip already has it
+            deliveryConfirmed = true; // Row predates this lifetime, so Skip received it
             return null;
         }
 
-        // No existing key — create one and return the raw value for SkipSDK to send once
+        // No existing key — create one and return the raw value for SkipSDK to send once.
+        // Delivery is unconfirmed until a request carrying it reaches Skip; the caller
+        // must resolve that via confirmCallbackKeyDelivered()/discardUnconfirmedCallbackKey().
         const rawKey = await createKeyWithScopes(serviceAccount, label, systemUser);
         if (rawKey) {
             provisioningComplete = true;
             createdRawKey = rawKey;
+            deliveryConfirmed = false;
             LogStatus('[SkipCallbackKeyProvisioner] Auto-provisioned new Skip callback key — will send to Skip on this request');
         }
         return rawKey;
