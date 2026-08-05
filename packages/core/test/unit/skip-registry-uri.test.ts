@@ -14,6 +14,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
     getConfiguredSkipRegistryURI,
     getSkipRegistryURI,
+    resolveSkipRegistryURI,
     DEFAULT_SKIP_BASE_URL,
     SKIP_REGISTRY_URI_OVERRIDE_ENV_VAR,
 } from '../../src/skip-config.js';
@@ -92,5 +93,32 @@ describe('getConfiguredSkipRegistryURI', () => {
         process.env.ASK_SKIP_URL = '';
 
         expect(getConfiguredSkipRegistryURI(PROD_REGISTRY_URI)).toBe(PROD_REGISTRY_URI);
+    });
+
+    describe('resolveSkipRegistryURI reports the deciding tier', () => {
+        // The 'stored' source is what setup warns on: no env var had an opinion, so a row
+        // carried over from another environment would otherwise route components silently.
+        it('reports "override" when the registry override is set', () => {
+            process.env[SKIP_REGISTRY_URI_OVERRIDE_ENV_VAR] = 'https://registry-dev.askskip.ai/registry';
+
+            expect(resolveSkipRegistryURI(PROD_REGISTRY_URI).source).toBe('override');
+        });
+
+        it('reports "brain" when derived from ASK_SKIP_URL', () => {
+            process.env.ASK_SKIP_URL = DEV_BRAIN_URL;
+
+            expect(resolveSkipRegistryURI(PROD_REGISTRY_URI).source).toBe('brain');
+        });
+
+        it('reports "stored" when the record value stands', () => {
+            expect(resolveSkipRegistryURI(`${DEV_BRAIN_URL}/registry`)).toEqual({
+                uri: `${DEV_BRAIN_URL}/registry`,
+                source: 'stored',
+            });
+        });
+
+        it('reports "default" when there is nothing to fall back to', () => {
+            expect(resolveSkipRegistryURI()).toEqual({ uri: PROD_REGISTRY_URI, source: 'default' });
+        });
     });
 });

@@ -40,6 +40,16 @@ The env-var name is derived by MemberJunction from the registry record's `Name` 
 
 Setup runs on install, on every `mj app upgrade`, and on every MJAPI boot (middleware self-heal). Because step 3 falls back to the stored value, a manually corrected row survives those re-runs — but setting either env var makes the environment authoritative and rewrites the row to match.
 
+Step 3 is the one case setup cannot verify, so it logs a warning whenever the stored value stands and is not the production default:
+
+```
+⚠ Skip component registry URI is https://brain-dev.askskip.ai/registry, not the production
+  default (https://brain-prod.askskip.ai/registry). Neither REGISTRY_URI_OVERRIDE_SKIP nor
+  ASK_SKIP_URL is set, so this stored value stands and Skip components will load from that host.
+```
+
+That is expected on an instance deliberately pointed at another brain with its env vars since removed. It is a red flag on a database restored or cloned from another environment — that instance will keep serving Skip components from the source environment's brain until you set `ASK_SKIP_URL` (or `REGISTRY_URI_OVERRIDE_SKIP`) or correct the record.
+
 ### Callback URL Construction
 
 The callback URL is how Skip Brain reaches back to your MJAPI to run views, queries, and other operations. It is constructed as:

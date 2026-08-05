@@ -59,9 +59,30 @@ export const SKIP_REGISTRY_URI_OVERRIDE_ENV_VAR = 'REGISTRY_URI_OVERRIDE_SKIP';
  *                    record from scratch — the production default is used instead.
  */
 export function getConfiguredSkipRegistryURI(fallbackURI?: string | null): string {
+    return resolveSkipRegistryURI(fallbackURI).uri;
+}
+
+/** Which tier of {@link resolveSkipRegistryURI} produced the URI. */
+export type SkipRegistryURISource = 'override' | 'brain' | 'stored' | 'default';
+
+/** A resolved registry URI plus the tier it came from, so callers can report *why*. */
+export interface ResolvedSkipRegistryURI {
+    uri: string;
+    source: SkipRegistryURISource;
+}
+
+/**
+ * {@link getConfiguredSkipRegistryURI} with the deciding tier attached.
+ *
+ * The `stored` tier is the one worth reporting: it means no environment variable had an
+ * opinion and the record's existing value stands. That is correct on a normal production
+ * instance, and also how a database restored from another environment keeps pointing at
+ * that environment's brain — so callers surface it rather than resolving in silence.
+ */
+export function resolveSkipRegistryURI(fallbackURI?: string | null): ResolvedSkipRegistryURI {
     const override = process.env[SKIP_REGISTRY_URI_OVERRIDE_ENV_VAR]?.trim();
     if (override) {
-        return stripTrailingSlashes(override);
+        return { uri: stripTrailingSlashes(override), source: 'override' };
     }
 
     // Read ASK_SKIP_URL directly rather than through getSkipConfig(): only the URL matters here,
@@ -69,11 +90,15 @@ export function getConfiguredSkipRegistryURI(fallbackURI?: string | null): strin
     // let a malformed config file break registry resolution.
     const skipURL = process.env.ASK_SKIP_URL?.trim();
     if (skipURL) {
-        return getSkipRegistryURI(skipURL);
+        return { uri: getSkipRegistryURI(skipURL), source: 'brain' };
     }
 
     const existing = fallbackURI?.trim();
-    return existing ? stripTrailingSlashes(existing) : getSkipRegistryURI();
+    if (existing) {
+        return { uri: stripTrailingSlashes(existing), source: 'stored' };
+    }
+
+    return { uri: getSkipRegistryURI(), source: 'default' };
 }
 
 /**
