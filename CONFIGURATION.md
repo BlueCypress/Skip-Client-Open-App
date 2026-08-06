@@ -25,6 +25,30 @@ Organization identification is handled automatically via the Skip API key -- no 
 | `GRAPHQL_PORT` | `4000` | MJAPI port, appended to `GRAPHQL_BASE_URL` when `MJAPI_PUBLIC_URL` is not set. |
 | `GRAPHQL_ROOT_PATH` | `/` | GraphQL endpoint path, appended to the callback URL. |
 | `DB_PLATFORM` | _(none)_ | Database platform. Set to `postgresql` if running against PostgreSQL; otherwise SQL Server is assumed. Uses the same env var as MJ's `resolveDbPlatformFromEnv()`. Legacy `DB_PROVIDER` is still accepted as a fallback. Tells Skip Brain which SQL dialect to generate. |
+| `REGISTRY_URI_OVERRIDE_SKIP` | _(derived from `ASK_SKIP_URL`)_ | Component registry base URI, e.g. `https://brain-dev.askskip.ai/registry`. Only needed when the registry lives somewhere other than the brain in `ASK_SKIP_URL`. Read directly by MJ's `ComponentRegistryResolver`. |
+| `REGISTRY_API_KEY_SKIP` | _(derived from the Skip API key)_ | API key for the component registry. Only needed when the registry requires a different key than `ASK_SKIP_API_KEY`. |
+
+### Component Registry URI
+
+Skip components are served from a registry whose base URI is stored on the `MJ: Component Registries` record named `Skip`. The URI is resolved in this order, and the resolved value is what setup persists on that record:
+
+1. **`REGISTRY_URI_OVERRIDE_SKIP`** — an explicit registry override wins outright. Use it to point the registry at a different host than the chat endpoint.
+2. **`ASK_SKIP_URL`** — with no explicit override, the configured brain serves its own registry, so `<ASK_SKIP_URL>/registry` is used.
+3. **The stored record value** — with neither variable set, the record is left as-is. On an instance that has never overridden it, that is the production default `https://brain-prod.askskip.ai/registry`.
+
+The env-var name is derived by MemberJunction from the registry record's `Name` (`Skip`), uppercased with non-alphanumeric characters replaced by underscores — hence `REGISTRY_URI_OVERRIDE_SKIP`. The same rule gives `REGISTRY_API_KEY_SKIP`.
+
+Setup runs on install, on every `mj app upgrade`, and on every MJAPI boot (middleware self-heal). Because step 3 falls back to the stored value, a manually corrected row survives those re-runs — but setting either env var makes the environment authoritative and rewrites the row to match.
+
+Step 3 is the one case setup cannot verify, so it logs a warning whenever the stored value stands and is not the production default:
+
+```
+⚠ Skip component registry URI is https://brain-dev.askskip.ai/registry, not the production
+  default (https://brain-prod.askskip.ai/registry). Neither REGISTRY_URI_OVERRIDE_SKIP nor
+  ASK_SKIP_URL is set, so this stored value stands and Skip components will load from that host.
+```
+
+That is expected on an instance deliberately pointed at another brain with its env vars since removed. It is a red flag on a database restored or cloned from another environment — that instance will keep serving Skip components from the source environment's brain until you set `ASK_SKIP_URL` (or `REGISTRY_URI_OVERRIDE_SKIP`) or correct the record.
 
 ### Callback URL Construction
 

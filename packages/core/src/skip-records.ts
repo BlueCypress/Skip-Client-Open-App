@@ -15,7 +15,13 @@
 import { LogError, RunView } from '@memberjunction/core';
 import type { IMetadataProvider, UserInfo, BaseEntity } from '@memberjunction/core';
 import { MJAIAgentEntity, MJComponentRegistryEntity } from '@memberjunction/core-entities';
-import { getSkipRegistryURI } from './skip-config.js';
+import {
+    getConfiguredSkipRegistryURI,
+    getSkipRegistryURI,
+    resolveSkipRegistryURI,
+    SKIP_REGISTRY_URI_OVERRIDE_ENV_VAR,
+} from './skip-config.js';
+import type { ResolvedSkipRegistryURI } from './skip-config.js';
 
 /**
  * Stable IDs for the Skip agent and component registry records. These are the same IDs
@@ -107,6 +113,31 @@ async function ensureSkipAgent(provider: IMetadataProvider, contextUser: UserInf
     }
 }
 
+/**
+ * Warns when the registry URI comes from the stored record and points somewhere other than
+ * production — the one case this resolution order cannot verify.
+ *
+ * No environment variable had an opinion, so whatever the row says is what MJ's
+ * ComponentRegistryResolver will use. On an instance that was deliberately pointed at another
+ * brain and had its env vars removed, that is correct. On a database restored or cloned from
+ * another environment, it silently keeps serving Skip components from that environment's brain.
+ * Setup can't tell those apart, so it says so at every install, upgrade, and boot rather than
+ * resolving without comment.
+ */
+function warnIfStoredRegistryURIIsUnverified(resolved: ResolvedSkipRegistryURI, log: (m: string) => void): void {
+    if (resolved.source !== 'stored' || resolved.uri === getSkipRegistryURI()) {
+        return;
+    }
+
+    log(
+        `  ⚠ Skip component registry URI is ${resolved.uri}, not the production default ` +
+        `(${getSkipRegistryURI()}). Neither ${SKIP_REGISTRY_URI_OVERRIDE_ENV_VAR} nor ASK_SKIP_URL is set, ` +
+        `so this stored value stands and Skip components will load from that host. If this instance was ` +
+        `restored from another environment's database, set ASK_SKIP_URL (or ${SKIP_REGISTRY_URI_OVERRIDE_ENV_VAR}) ` +
+        `to the correct brain and re-run setup, or correct the record directly.`,
+    );
+}
+
 async function ensureSkipComponentRegistry(
     provider: IMetadataProvider,
     contextUser: UserInfo,
@@ -119,7 +150,14 @@ async function ensureSkipComponentRegistry(
     );
     if (existing.Success && existing.Results?.length) {
         const record = existing.Results[0] as MJComponentRegistryEntity;
-        const expectedURI = getSkipRegistryURI();
+        // Pass the stored URI as the fallback: with no registry/brain env vars set, the row is
+        // left exactly as it is. Setup runs again on every upgrade and on every MJAPI boot
+        // (SkipMiddleware self-heal), so resolving to a bare default here would revert an
+        // operator's manual correction each time.
+        const resolved = resolveSkipRegistryURI(record.URI);
+        warnIfStoredRegistryURIIsUnverified(resolved, log);
+
+        const expectedURI = resolved.uri;
         if (record.URI !== expectedURI) {
             record.URI = expectedURI;
             if (await record.Save()) {
@@ -138,7 +176,7 @@ async function ensureSkipComponentRegistry(
     reg.ID = SKIP_REGISTRY_ID;
     reg.Name = 'Skip';
     reg.Description = 'Skip SaaS AI Agent - Remote Registry for Component Retrieval';
-    reg.URI = getSkipRegistryURI();
+    reg.URI = getConfiguredSkipRegistryURI();
     reg.Type = 'Public';
     reg.APIVersion = '1.0.0';
     reg.Status = 'Active';

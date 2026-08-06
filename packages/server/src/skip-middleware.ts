@@ -203,12 +203,14 @@ export class SkipMiddleware extends BaseServerMiddleware {
     /**
      * Derive REGISTRY_URI_OVERRIDE_SKIP and REGISTRY_API_KEY_SKIP from the Skip config
      * so operators don't need separate env vars for the component registry. MJ's
-     * ComponentRegistryResolver reads these to override the production registry URI
-     * (stored in the DB as the production registry URI) and to authenticate.
+     * ComponentRegistryResolver reads these to override the URI stored on the registry
+     * record and to authenticate.
      *
-     * Only sets them when ASK_SKIP_URL points at a non-production Skip instance —
-     * production uses the DB-stored URI directly and resolves the API key from the
-     * credential store. Explicit env vars always win (not overwritten).
+     * Only sets the URI override when ASK_SKIP_URL points at a non-production Skip instance —
+     * otherwise the DB-stored URI stands on its own. Runs before ensureSkipRecords() below,
+     * so the URI this derives is also the one persisted on the record: env and DB agree
+     * instead of the row quietly claiming production. Explicit env vars always win
+     * (not overwritten).
      */
     private async deriveRegistryEnvVars(): Promise<void> {
         const config = getSkipConfig();
