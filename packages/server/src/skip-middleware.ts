@@ -13,7 +13,7 @@
 import { RegisterClass } from '@memberjunction/global';
 import { BaseServerMiddleware } from '@memberjunction/server';
 import { LogStatus, LogError, Metadata } from '@memberjunction/core';
-import type { IMetadataProvider, UserInfo } from '@memberjunction/core';
+import type { UserInfo } from '@memberjunction/core';
 import type { Application, Request, Response, RequestHandler } from 'express';
 import { Router, json as jsonBodyParser } from 'express';
 import { GetAPIKeyEngine } from '@memberjunction/api-keys';
@@ -98,7 +98,11 @@ export class SkipMiddleware extends BaseServerMiddleware {
             // but it guarantees @skip keeps working even after a core sync drops the legacy agent.
             const systemUser = UserCache.Instance.GetSystemUser();
             if (systemUser) {
-                await ensureSkipRecords(new Metadata() as unknown as IMetadataProvider, systemUser, (m) => LogStatus(m));
+                // Metadata.Provider, not `new Metadata()` — the instance only satisfies
+                // IMetadataProvider through a cast, and happens to work here solely because
+                // ensureSkipRecords sticks to GetEntityObject(). Passing the real provider
+                // keeps that from silently breaking if it ever reaches for more.
+                await ensureSkipRecords(Metadata.Provider, systemUser, (m) => LogStatus(m));
             }
         } catch (e) {
             LogError(`[skip-client] Middleware Initialize() warning: ${e instanceof Error ? e.message : String(e)}`);
@@ -199,12 +203,14 @@ export class SkipMiddleware extends BaseServerMiddleware {
     /**
      * Derive REGISTRY_URI_OVERRIDE_SKIP and REGISTRY_API_KEY_SKIP from the Skip config
      * so operators don't need separate env vars for the component registry. MJ's
-     * ComponentRegistryResolver reads these to override the production registry URI
-     * (stored in the DB as the production registry URI) and to authenticate.
+     * ComponentRegistryResolver reads these to override the URI stored on the registry
+     * record and to authenticate.
      *
-     * Only sets them when ASK_SKIP_URL points at a non-production Skip instance —
-     * production uses the DB-stored URI directly and resolves the API key from the
-     * credential store. Explicit env vars always win (not overwritten).
+     * Only sets the URI override when ASK_SKIP_URL points at a non-production Skip instance —
+     * otherwise the DB-stored URI stands on its own. Runs before ensureSkipRecords() below,
+     * so the URI this derives is also the one persisted on the record: env and DB agree
+     * instead of the row quietly claiming production. Explicit env vars always win
+     * (not overwritten).
      */
     private async deriveRegistryEnvVars(): Promise<void> {
         const config = getSkipConfig();

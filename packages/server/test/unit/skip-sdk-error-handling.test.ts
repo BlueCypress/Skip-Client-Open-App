@@ -21,10 +21,14 @@ import {
 // Mock the callback key provisioner
 const mockResetCallbackKeyProvisioning = vi.fn().mockResolvedValue(undefined);
 const mockGetSkipCallbackKey = vi.fn().mockResolvedValue(null);
+const mockConfirmCallbackKeyDelivered = vi.fn();
+const mockDiscardUnconfirmedCallbackKey = vi.fn().mockResolvedValue(false);
 
 vi.mock('../../src/skip-callback-key-provisioner.js', () => ({
     getSkipCallbackKey: (...args: unknown[]) => mockGetSkipCallbackKey(...args),
     resetCallbackKeyProvisioning: (...args: unknown[]) => mockResetCallbackKeyProvisioning(...args),
+    confirmCallbackKeyDelivered: (...args: unknown[]) => mockConfirmCallbackKeyDelivered(...args),
+    discardUnconfirmedCallbackKey: (...args: unknown[]) => mockDiscardUnconfirmedCallbackKey(...args),
 }));
 
 // Mock @askskip/core
@@ -329,6 +333,99 @@ describe('SkipSDK error handling', () => {
 
             expect(result.success).toBe(false);
             expect(mockResetCallbackKeyProvisioning).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('callback key delivery confirmation', () => {
+        it('confirms delivery when Skip returns a successful response', async () => {
+            const { sdk, setResponses } = createSdkWithMockedSSE();
+
+            setResponses([{
+                type: 'complete',
+                value: {
+                    success: true,
+                    responsePhase: SkipResponsePhase.analysis_complete,
+                    messages: [],
+                },
+            }]);
+
+            await sdk.chat(makeCallOptions());
+
+            expect(mockConfirmCallbackKeyDelivered).toHaveBeenCalled();
+            expect(mockDiscardUnconfirmedCallbackKey).not.toHaveBeenCalled();
+        });
+
+        it('confirms delivery even when Skip reports a workflow error', async () => {
+            // Skip resolves the callback credential before running any workflow, so a
+            // Skip-side error still proves the key was received and stored.
+            const { sdk, setResponses } = createSdkWithMockedSSE();
+
+            setResponses([{
+                type: 'complete',
+                value: {
+                    success: false,
+                    errorDetail: buildErrorDetail({
+                        code: SkipErrorCode.model_error,
+                        type: 'ai_model',
+                        retryAction: SkipRetryAction.do_not_retry,
+                    }),
+                    responsePhase: SkipResponsePhase.analysis_complete,
+                    messages: [],
+                },
+            }]);
+
+            await sdk.chat(makeCallOptions());
+
+            expect(mockConfirmCallbackKeyDelivered).toHaveBeenCalled();
+            expect(mockDiscardUnconfirmedCallbackKey).not.toHaveBeenCalled();
+        });
+
+        it('discards an unconfirmed key when the request fails before Skip reads it', async () => {
+            // The 401-at-the-edge case: the key was minted and sent, but Skip never
+            // parsed the body, so keeping the row would wedge the next restart.
+            const { sdk } = createSdkWithMockedSSE();
+            (sdk as Record<string, unknown>)['sendSSERequest'] = vi.fn().mockRejectedValue(
+                new Error('HTTP 401: Please provide an API key via X-API-Key header')
+            );
+
+            const result = await sdk.chat(makeCallOptions());
+
+            expect(result.success).toBe(false);
+            expect(mockDiscardUnconfirmedCallbackKey).toHaveBeenCalled();
+            expect(mockConfirmCallbackKeyDelivered).not.toHaveBeenCalled();
+        });
+
+        it('discards an unconfirmed key when no response is received', async () => {
+            const { sdk, setResponses } = createSdkWithMockedSSE();
+            setResponses([]);
+
+            const result = await sdk.chat(makeCallOptions());
+
+            expect(result.success).toBe(false);
+            expect(mockDiscardUnconfirmedCallbackKey).toHaveBeenCalled();
+            expect(mockConfirmCallbackKeyDelivered).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('missing Skip API key', () => {
+        it('fails before provisioning a callback key when no API key is configured', async () => {
+            // Guards the original defect: without this, buildSkipRequest() mints a scoped
+            // callback key for a request the edge rejects, orphaning it permanently.
+            const sdk = new SkipSDK({ apiUrl: 'https://test.askskip.ai', apiKey: 'placeholder' });
+            // The constructor falls back to getSkipConfig().apiKey (mocked non-empty), so
+            // clear the resolved value directly to model an unconfigured environment.
+            (sdk as unknown as { config: { apiKey?: string } }).config.apiKey = '';
+            const sendSSERequest = vi.fn();
+            (sdk as Record<string, unknown>)['sendSSERequest'] = sendSSERequest;
+            // ensureConfig() falls back to the credential store; make it come up empty too.
+            (sdk as Record<string, unknown>)['ensureConfig'] = vi.fn().mockResolvedValue(undefined);
+
+            const result = await sdk.chat(makeCallOptions());
+
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('ASK_SKIP_API_KEY');
+            expect(sendSSERequest).not.toHaveBeenCalled();
+            expect(mockGetSkipCallbackKey).not.toHaveBeenCalled();
         });
     });
 });
