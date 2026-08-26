@@ -38,8 +38,8 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@memberjunction/core": "^5.45.1",
-    "@memberjunction/credentials": "^5.45.1"
+    "@memberjunction/core": "^5.51.0",
+    "@memberjunction/credentials": "^5.51.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
