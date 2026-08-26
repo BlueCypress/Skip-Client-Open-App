@@ -8,7 +8,7 @@
  * callback API key(s) the provisioner minted at runtime (which are in no migration).
  *
  * Deletion order is FK-safe: API Key Scopes -> API Keys -> User Roles -> Entity Permissions
- * -> User -> Role. It never throws — failures are logged so removal can proceed.
+ * -> User -> Role -> API Scope. It never throws — failures are logged so removal can proceed.
  */
 import { LogStatus, LogError, RunView } from '@memberjunction/core';
 import type { UserInfo, BaseEntity } from '@memberjunction/core';
@@ -37,6 +37,21 @@ const ENTITY_PERMISSION_IDS = [
     '21E86DC8-3E03-41DC-B8E6-B36324666C21',
     '14BA1F89-0FB7-43E9-A283-2EB9A9FF4BBF',
 ];
+
+/**
+ * The `query:profile` scope, seeded by V202608172304__skip_client_query_profile_scope.sql.
+ *
+ * Unlike the generic MJ-core scopes left in place below, this one describes a
+ * resolver that only exists while this app is installed — so leaving it behind
+ * would advertise a capability the instance no longer has.
+ */
+const QUERY_PROFILE_SCOPE_ID = '5FB4019D-7DBA-45A3-BDD9-B7995F44073C';
+
+/**
+ * The MJAPI application-scope grant for `query:profile`, seeded by the same
+ * migration. Carries an FK to the scope above, so it must be deleted first.
+ */
+const QUERY_PROFILE_APP_SCOPE_ID = 'F7162165-9589-4511-9F4B-4B46EE58CC36';
 
 export default async function teardown(payload: SkipHookPayload): Promise<void> {
     const contextUser = payload.ContextUser as UserInfo;
@@ -82,8 +97,13 @@ export default async function teardown(payload: SkipHookPayload): Promise<void> 
         await deleteByIDs(rv, contextUser, 'MJ: Users', [SKIP_SERVICE_USER_ID], log);
         // 5. Skip Service role
         await deleteByIDs(rv, contextUser, 'MJ: Roles', [SKIP_SERVICE_ROLE_ID], log);
+        // 6. The MJAPI application ceiling grant, then the app-owned `query:profile`
+        //    scope itself. Order matters — the grant has an FK to the scope. The
+        //    per-key grants went with the API Key Scopes deleted in step 1.
+        await deleteByIDs(rv, contextUser, 'MJ: API Application Scopes', [QUERY_PROFILE_APP_SCOPE_ID], log);
+        await deleteByIDs(rv, contextUser, 'MJ: API Scopes', [QUERY_PROFILE_SCOPE_ID], log);
 
-        log('✓ Skip Client identity records removed. Note: generic API scopes and MJAPI ceiling grants are MJ-core records and are intentionally left in place.');
+        log('✓ Skip Client identity records removed. Note: generic MJ-core API scopes and MJAPI ceiling grants are left in place; only the app-owned query:profile scope is removed.');
     } catch (e) {
         LogError(`[skip-client teardown] ${e instanceof Error ? e.message : String(e)}`);
     }
