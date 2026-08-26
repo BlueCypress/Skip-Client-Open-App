@@ -10,6 +10,8 @@
  * Importing this module also pulls in skip-agent.js, triggering the
  * `@RegisterClass(BaseAgent, 'SkipProxyAgent')` registration.
  */
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { RegisterClass } from '@memberjunction/global';
 import { BaseServerMiddleware } from '@memberjunction/server';
 import { LogStatus, LogError, Metadata } from '@memberjunction/core';
@@ -20,6 +22,7 @@ import { GetAPIKeyEngine } from '@memberjunction/api-keys';
 import { UserCache } from '@memberjunction/sqlserver-dataprovider';
 import { ensureSkipRecords, getSkipConfig, DEFAULT_SKIP_BASE_URL, getSkipRegistryURI, resolveSkipApiKey } from '@askskip/core';
 import { SkipSDK } from './skip-sdk.js';
+import { APP_OWNED_SCOPE_PATHS } from './skip-callback-key-provisioner.js';
 
 // Side-effect import: ensure SkipProxyAgent's @RegisterClass(BaseAgent, 'SkipProxyAgent') runs.
 import './skip-agent.js';
@@ -27,9 +30,12 @@ import './skip-agent.js';
 /** Scopes the callback-key provisioner assigns; all must exist for provisioning to succeed. */
 const REQUIRED_SCOPE_PATHS = [
     'view:run', 'view:batch', 'query:run', 'query:create', 'query:update', 'query:delete',
-    'query:test', 'search:execute', 'prompt:execute', 'agent:execute', 'embedding:generate',
+    'query:test', 'query:profile', 'search:execute', 'prompt:execute', 'agent:execute', 'embedding:generate',
 ];
 const SKIP_SERVICE_EMAIL = 'skip-service@skip.internal';
+
+/** This package is ESM, so `__dirname` does not exist — derive it from the module URL. */
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 @RegisterClass(BaseServerMiddleware, 'skip')
 export class SkipMiddleware extends BaseServerMiddleware {
@@ -79,11 +85,27 @@ export class SkipMiddleware extends BaseServerMiddleware {
                 );
             }
             if (missingScopes.length) {
-                LogError(
-                    `[skip-client] Missing required API scopes: ${missingScopes.join(', ')}. ` +
-                    `These ship with the MJ core build that supports this app — ensure the host MJ version is up to date. ` +
-                    `Scoped callback provisioning will fail until they exist.`,
-                );
+                // The two kinds of missing scope have different fixes, and reporting
+                // them under one message sends operators to the wrong one: an MJ
+                // upgrade will never produce `query:profile`, and this app's
+                // migrations will never produce `query:run`.
+                const appOwned = missingScopes.filter((p) => APP_OWNED_SCOPE_PATHS.includes(p));
+                const mjCore = missingScopes.filter((p) => !APP_OWNED_SCOPE_PATHS.includes(p));
+
+                if (mjCore.length) {
+                    LogError(
+                        `[skip-client] Missing required MJ core API scopes: ${mjCore.join(', ')}. ` +
+                        `These ship with the MJ core build that supports this app — ensure the host MJ version is up to date. ` +
+                        `Scoped callback provisioning will fail until they exist.`,
+                    );
+                }
+                if (appOwned.length) {
+                    LogError(
+                        `[skip-client] Missing Skip Client API scopes: ${appOwned.join(', ')}. ` +
+                        `These are seeded by this app's own migrations, not by MJ — run the app install/upgrade so its migrations apply. ` +
+                        `Until then the affected capability degrades: query profiling returns test results without statistics.`,
+                    );
+                }
             }
             if (serviceAccount && !missingScopes.length) {
                 LogStatus(
@@ -195,9 +217,17 @@ export class SkipMiddleware extends BaseServerMiddleware {
         return [evalRouter as unknown as RequestHandler];
     }
 
-    /** No Skip-specific GraphQL resolvers today; reserved for future client-side Skip endpoints. */
+    /**
+     * Skip-specific GraphQL resolvers, merged into the host MJServer schema by
+     * `serve()`. Currently `TestAndProfileQuerySQL` — a superset of MJ's
+     * `TestQuerySQL` that can additionally return statistics computed over the
+     * full uncapped result set without row data leaving the client's database.
+     *
+     * Additive and inert: nothing calls it until Skip does, and Skip degrades
+     * cleanly against deployments that predate it.
+     */
     GetResolverPaths(): string[] {
-        return [];
+        return [path.join(MODULE_DIR, 'resolvers', '*Resolver.{js,ts}')];
     }
 
     /**
