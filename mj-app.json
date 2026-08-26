@@ -11,7 +11,7 @@
     "name": "BlueCypress"
   },
   "repository": "https://github.com/BlueCypress/Skip-Client-Open-App",
-  "mjVersionRange": ">=5.45.1 <6.0.0",
+  "mjVersionRange": ">=5.51.0 <6.0.0",
   "schema": {
     "name": "skip_client",
     "createIfNotExists": true
