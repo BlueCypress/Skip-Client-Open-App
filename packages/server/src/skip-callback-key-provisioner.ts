@@ -31,12 +31,26 @@ const SKIP_SERVICE_EMAIL = 'skip-service@skip.internal';
  * Narrowly scoped entries (e.g. entity:delete with 'MJ: Quer*') limit
  * the key to only the entities Skip needs, following least-privilege.
  *
- * FullPaths must match entries in MJ/metadata/api-scopes/.api-scopes.json.
+ * FullPaths must match entries in MJ/metadata/api-scopes/.api-scopes.json, with
+ * the single exception of `query:profile` — that scope describes this app's own
+ * `TestAndProfileQuerySQL` resolver rather than an MJ resolver, so this app seeds
+ * it (V202608172304__skip_client_query_profile_scope.sql) and removes it on
+ * teardown.
  */
 interface RequiredScope {
     path: string;
     resourcePattern?: string;
 }
+
+/**
+ * The scopes this app seeds itself rather than inheriting from MJ core.
+ *
+ * Their absence means this app's migrations have not been applied — a different
+ * problem with a different fix than a missing MJ-core scope, and one that must
+ * degrade rather than abort. Kept here beside {@link REQUIRED_SCOPES} so the two
+ * lists cannot drift; `skip-middleware.ts` imports it for its startup diagnostic.
+ */
+export const APP_OWNED_SCOPE_PATHS: readonly string[] = ['query:profile'];
 
 const REQUIRED_SCOPES: RequiredScope[] = [
     { path: 'view:run' },
@@ -46,6 +60,10 @@ const REQUIRED_SCOPES: RequiredScope[] = [
     { path: 'query:update' },
     { path: 'query:delete' },
     { path: 'query:test' },
+    // Seeded by this app, not by MJ core — it guards this app's own
+    // TestAndProfileQuerySQL resolver. Revoking it disables query profiling
+    // without affecting query:test, which is the point of it being separate.
+    { path: 'query:profile' },
     { path: 'search:execute' },
     { path: 'prompt:execute' },
     { path: 'agent:execute' },
@@ -422,15 +440,35 @@ async function assignScopes(apiKeyID: string, contextUser: UserInfo, engine: Ret
     const scopeMap = new Map(cachedScopes.map(s => [s.FullPath, s.ID]));
 
     const missing = REQUIRED_SCOPES.filter(s => !scopeMap.has(s.path));
-    if (missing.length > 0) {
-        LogError(`[SkipCallbackKeyProvisioner] Missing scopes in engine cache: ${missing.map(s => s.path).join(', ')}. ` +
+
+    // A missing MJ-core scope still aborts: those are the scopes Skip cannot
+    // operate without, and half-provisioning a key would fail later in a much
+    // more confusing place.
+    //
+    // A missing app-owned scope must NOT abort. `query:profile` is seeded by this
+    // app's own migration, so unlike the MJ-core scopes it can legitimately be
+    // absent — a migration that has not run yet, or an instance where an operator
+    // deleted it to disable profiling. Aborting would leave the callback key with
+    // NO scopes at all, taking down every Skip operation to punish the absence of
+    // an optional one.
+    const missingCore = missing.filter(s => !APP_OWNED_SCOPE_PATHS.includes(s.path));
+    if (missingCore.length > 0) {
+        LogError(`[SkipCallbackKeyProvisioner] Missing MJ core scopes in engine cache: ${missingCore.map(s => s.path).join(', ')}. ` +
             'Run MJ metadata sync to deploy API scope definitions.');
         return false;
     }
 
+    const missingAppOwned = missing.filter(s => APP_OWNED_SCOPE_PATHS.includes(s.path));
+    if (missingAppOwned.length > 0) {
+        LogStatus(`[SkipCallbackKeyProvisioner] Skipping Skip Client scopes absent from this instance: ${missingAppOwned.map(s => s.path).join(', ')}. ` +
+            'Run the app install/upgrade to apply the migrations that seed them; the key is provisioned without them.');
+    }
+
     let allSaved = true;
     for (const scope of REQUIRED_SCOPES) {
-        const scopeID = scopeMap.get(scope.path)!;
+        const scopeID = scopeMap.get(scope.path);
+        if (!scopeID) continue; // app-owned and absent — reported above
+
         const keyScopeEntity = await md.GetEntityObject('MJ: API Key Scopes', contextUser);
         keyScopeEntity.NewRecord();
         keyScopeEntity.Set('APIKeyID', apiKeyID);

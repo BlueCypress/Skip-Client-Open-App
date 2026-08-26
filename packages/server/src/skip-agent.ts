@@ -176,8 +176,18 @@ export class SkipProxyAgent extends BaseAgent {
         // Call Skip API
         const result = await this.skipSDK.chat(skipOptions);
 
-        // Handle Skip API errors — surface the actual error message, not a generic wrapper
-        if (!result.success || !result.response) {
+        // Only a call that produced NO response body is a transport failure — HTTP error,
+        // socket drop, malformed stream, nothing came back at all. Those have nothing to
+        // say to the user beyond the SDK's own message, so they short-circuit here.
+        //
+        // A Skip-reported failure is not one of those. It arrives as a complete response
+        // whose messages carry the prose Skip composed for this request in its Failure
+        // Finalization step; only `success` is false. `SkipSDK.chat` flattens that case to
+        // `success: false` with `error` set to the internal `errorDetail.message`, so
+        // gating on `result.success` here discarded the response — and with it the only
+        // user-readable account of the failure — before `handleSkipError` could route it,
+        // leaving the user to read "Pipeline failed at step 'Execute Sub-Agent: …'".
+        if (!result.response) {
             const errorMsg = result.error || 'No response received from Skip API';
             LogError(`[SkipProxyAgent] Skip API call failed: ${errorMsg}`);
             return {
@@ -327,25 +337,50 @@ export class SkipProxyAgent extends BaseAgent {
     }
 
     /**
-     * Handle Skip error responses — extracts the most descriptive error available
+     * Handle Skip error responses.
+     *
+     * A failure response carries two different accounts of what went wrong, and they
+     * are not interchangeable:
+     *
+     *   - the **last system message** is prose Skip composed for this specific request
+     *     — what it was attempting, and what the user might try instead
+     *   - **`errorDetail.message`** is the diagnostic: internal pipeline language such
+     *     as `Pipeline failed at step 'Execute Sub-Agent: Skip: Data Expert'`, which
+     *     names steps no user has heard of
+     *
+     * These map cleanly onto the two fields of the returned step — `message` is shown,
+     * `errorMessage` is recorded — so each is routed to the one it belongs in. Reading
+     * `errorDetail.message` into both put internal jargon in front of end users on
+     * every ordinary failure, since both fields are populated whenever Skip reaches
+     * its failure-finalization step.
+     *
+     * `hiddenToUser` messages are skipped: they exist for internal bookkeeping and are
+     * not written to be read by anyone.
      */
     private handleSkipError(apiResponse: SkipAPIResponse): BaseAgentNextStep<ComponentSpec> {
-        // Try to get a meaningful error: explicit error field, last system message, or fallback
         const lastSystemMessage = apiResponse.messages
-            ?.filter(m => m.role === 'system')
+            ?.filter(m => m.role === 'system' && !m.hiddenToUser)
             .pop();
 
-        const errorDetail = apiResponse.errorDetail?.message
-            || lastSystemMessage?.content
-            || 'Skip returned an error with no details';
+        const userMessage = lastSystemMessage?.content?.trim();
+        // Skip mirrors the raw failure onto the system message's `error` field, so it
+        // remains available for the log even when errorDetail is absent.
+        const diagnostic = apiResponse.errorDetail?.message?.trim()
+            || lastSystemMessage?.error?.trim();
+        const fallback = 'Skip returned an error with no details';
 
-        LogError(`[SkipProxyAgent] Skip error (phase: ${apiResponse.responsePhase}): ${errorDetail}`);
+        LogError(
+            `[SkipProxyAgent] Skip error (phase: ${apiResponse.responsePhase}): ` +
+            `${diagnostic || userMessage || fallback}`
+        );
 
         return {
             terminate: true,
             step: 'Failed',
-            message: errorDetail,
-            errorMessage: errorDetail,
+            // Shown to the user — prefer the explanation written for them.
+            message: userMessage || diagnostic || fallback,
+            // Recorded for debugging — prefer the one that names the failing step.
+            errorMessage: diagnostic || userMessage || fallback,
             newPayload: undefined
         };
     }
