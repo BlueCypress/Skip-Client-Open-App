@@ -176,8 +176,18 @@ export class SkipProxyAgent extends BaseAgent {
         // Call Skip API
         const result = await this.skipSDK.chat(skipOptions);
 
-        // Handle Skip API errors — surface the actual error message, not a generic wrapper
-        if (!result.success || !result.response) {
+        // Only a call that produced NO response body is a transport failure — HTTP error,
+        // socket drop, malformed stream, nothing came back at all. Those have nothing to
+        // say to the user beyond the SDK's own message, so they short-circuit here.
+        //
+        // A Skip-reported failure is not one of those. It arrives as a complete response
+        // whose messages carry the prose Skip composed for this request in its Failure
+        // Finalization step; only `success` is false. `SkipSDK.chat` flattens that case to
+        // `success: false` with `error` set to the internal `errorDetail.message`, so
+        // gating on `result.success` here discarded the response — and with it the only
+        // user-readable account of the failure — before `handleSkipError` could route it,
+        // leaving the user to read "Pipeline failed at step 'Execute Sub-Agent: …'".
+        if (!result.response) {
             const errorMsg = result.error || 'No response received from Skip API';
             LogError(`[SkipProxyAgent] Skip API call failed: ${errorMsg}`);
             return {

@@ -159,3 +159,86 @@ describe('handleSkipError', () => {
         expect(result.message).toBe(DIAGNOSTIC);
     });
 });
+
+// ── Dispatch ────────────────────────────────────────────────────────────────
+//
+// handleSkipError only matters if execution actually reaches it. `SkipSDK.chat`
+// reports a Skip-side failure as `success: false` WITH the response attached and
+// `error` set to the internal errorDetail.message. Short-circuiting on
+// `result.success` therefore skipped handleSkipError entirely on every real Skip
+// failure and echoed the diagnostic straight at the user — the tests above passed
+// against a function nothing called. Only the absence of a response body is a
+// transport failure.
+
+type SkipCallStub = {
+    success: boolean;
+    response?: SkipAPIResponse;
+    responsePhase?: string;
+    error?: string;
+};
+
+/** Drives executeAgentInternal with a stubbed SDK and returns the finalStep. */
+async function execute(chatResult: SkipCallStub) {
+    const agent = new SkipProxyAgent();
+    (agent as unknown as { skipSDK: unknown }).skipSDK = {
+        ensureConfig: vi.fn(),
+        chat: vi.fn().mockResolvedValue(chatResult),
+    };
+
+    const { finalStep } = await (agent as unknown as {
+        executeAgentInternal(params: unknown, config: unknown): Promise<{
+            finalStep: { message?: string; errorMessage?: string; step: string };
+        }>;
+    }).executeAgentInternal(
+        { contextUser: { ID: 'u-1' }, conversationMessages: [], data: {} },
+        {}
+    );
+    return finalStep;
+}
+
+/** A Skip failure exactly as SkipSDK.chat surfaces it. */
+const skipReportedFailure: SkipCallStub = {
+    success: false,
+    error: DIAGNOSTIC,
+    responsePhase: SkipResponsePhase.analysis_complete,
+    response: {
+        success: false,
+        responsePhase: SkipResponsePhase.analysis_complete,
+        errorDetail: { message: DIAGNOSTIC } as SkipAPIResponse['errorDetail'],
+        messages: [systemMessage(USER_MESSAGE, { error: DIAGNOSTIC })],
+    } as SkipAPIResponse,
+};
+
+describe('executeAgentInternal — routing a Skip-reported failure', () => {
+    it('shows the user Skip’s own explanation, not the pipeline diagnostic', async () => {
+        const finalStep = await execute(skipReportedFailure);
+
+        expect(finalStep.message).toBe(USER_MESSAGE);
+        expect(finalStep.message).not.toContain('Execute Sub-Agent');
+    });
+
+    it('still records the diagnostic and fails the run', async () => {
+        const finalStep = await execute(skipReportedFailure);
+
+        expect(finalStep.errorMessage).toBe(DIAGNOSTIC);
+        expect(finalStep.step).toBe('Failed');
+    });
+
+    it('reports the SDK error directly when no response came back', async () => {
+        // Transport failure — nothing to route, and nothing better to say.
+        const finalStep = await execute({
+            success: false,
+            error: 'Unable to connect to the Skip analysis service.',
+        });
+
+        expect(finalStep.step).toBe('Failed');
+        expect(finalStep.message).toBe('Unable to connect to the Skip analysis service.');
+        expect(finalStep.errorMessage).toBe('Unable to connect to the Skip analysis service.');
+    });
+
+    it('falls back when the SDK reports neither a response nor an error', async () => {
+        const finalStep = await execute({ success: false });
+
+        expect(finalStep.message).toBe('No response received from Skip API');
+    });
+});
