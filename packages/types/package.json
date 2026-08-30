@@ -28,12 +28,12 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@memberjunction/ai-core-plus": "^6.1.0-edge.4",
-    "@memberjunction/core": "^6.1.0-edge.4",
-    "@memberjunction/data-context": "^6.1.0-edge.4",
-    "@memberjunction/global": "^6.1.0-edge.4",
-    "@memberjunction/interactive-component-types": "^6.1.0-edge.4",
-    "@memberjunction/sql-dialect": "^6.1.0-edge.4"
+    "@memberjunction/ai-core-plus": "^5.51.0 || ^6.1.0-edge.4",
+    "@memberjunction/core": "^5.51.0 || ^6.1.0-edge.4",
+    "@memberjunction/data-context": "^5.51.0 || ^6.1.0-edge.4",
+    "@memberjunction/global": "^5.51.0 || ^6.1.0-edge.4",
+    "@memberjunction/interactive-component-types": "^5.51.0 || ^6.1.0-edge.4",
+    "@memberjunction/sql-dialect": "^5.51.0 || ^6.1.0-edge.4"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
