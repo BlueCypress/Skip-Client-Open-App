@@ -1,7 +1,7 @@
 {
   "name": "@askskip/core",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Skip Client Open App shared foundation — config + API-key resolver, Skip AI Agent / component-registry record helpers, and the in-process install (setup) / uninstall (teardown) hooks referenced by the app manifest. Deliberately light (core + credentials only) so install hooks run without the runtime package's heavy dependencies.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -38,8 +38,8 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@memberjunction/core": "^5.51.0",
-    "@memberjunction/credentials": "^5.51.0"
+    "@memberjunction/core": "^5.51.0 || ^6.1.0-edge.4",
+    "@memberjunction/credentials": "^5.51.0 || ^6.1.0-edge.4"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

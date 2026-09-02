@@ -1,7 +1,7 @@
 {
   "name": "@askskip/types",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Skip AI Assistant types shared between the Skip API, the MJAPI, and MemberJunction Explorer. Extracted from @memberjunction/skip-types into the @askskip scope.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -28,12 +28,12 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@memberjunction/ai-core-plus": "^5.51.0",
-    "@memberjunction/core": "^5.51.0",
-    "@memberjunction/data-context": "^5.51.0",
-    "@memberjunction/global": "^5.51.0",
-    "@memberjunction/interactive-component-types": "^5.51.0",
-    "@memberjunction/sql-dialect": "^5.51.0"
+    "@memberjunction/ai-core-plus": "^5.51.0 || ^6.1.0-edge.4",
+    "@memberjunction/core": "^5.51.0 || ^6.1.0-edge.4",
+    "@memberjunction/data-context": "^5.51.0 || ^6.1.0-edge.4",
+    "@memberjunction/global": "^5.51.0 || ^6.1.0-edge.4",
+    "@memberjunction/interactive-component-types": "^5.51.0 || ^6.1.0-edge.4",
+    "@memberjunction/sql-dialect": "^5.51.0 || ^6.1.0-edge.4"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
