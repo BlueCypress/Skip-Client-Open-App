@@ -1,5 +1,17 @@
 # @askskip/core
 
+## 0.2.0
+
+### Minor Changes
+
+- MemberJunction 6.1 compatibility.
+
+  PR #21 already widened `mj-app.json` `mjVersionRange` to `>=5.51.0 <7.0.0` so the manifest would accept a 6.x host, but that fix was never released — the `v0.1.0` tag still carries `>=5.51.0 <6.0.0`, and `mj app install` reads the manifest at the tag, not at `next`. More importantly the fix was only half the problem: all 25 `@memberjunction/*` pins across the three packages were still `^5.51.0`/`^5.45.1`, so on an MJ 6.1 host `npm ci` fails with ERESOLVE on the peer conflict regardless of what the manifest says.
+
+  This raises every `@memberjunction/*` pin to `^6.1.0-edge.4` and lifts the manifest floor to `>=6.1.0-edge.4 <7.0.0`. The floor moves up rather than staying at 5.51 because the packages now genuinely require 6.1 — leaving it at `>=5.51.0` would advertise a compatibility the peers no longer allow.
+
+  No source changes; all three packages compile unmodified against 6.1.0-edge.4.
+
 ## 0.1.0
 
 ### Minor Changes

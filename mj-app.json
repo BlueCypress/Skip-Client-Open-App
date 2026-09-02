@@ -3,7 +3,7 @@
   "name": "skip-client",
   "displayName": "Skip Client",
   "description": "Installs the Skip client-side footprint — the Skip proxy agent, SDK, scoped callback-key provisioner, server middleware, and the Skip Service identity (service account, role, query-entity permissions) — only on the MJ instances that use Skip.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "ISC",
   "icon": "fa-robot",
   "color": "#147f9d",
@@ -11,7 +11,7 @@
     "name": "BlueCypress"
   },
   "repository": "https://github.com/BlueCypress/Skip-Client-Open-App",
-  "mjVersionRange": ">=5.51.0 <6.0.0",
+  "mjVersionRange": ">=5.51.0 <7.0.0",
   "schema": {
     "name": "skip_client",
     "createIfNotExists": true
