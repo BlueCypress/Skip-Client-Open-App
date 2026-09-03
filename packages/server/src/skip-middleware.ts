@@ -22,16 +22,11 @@ import { GetAPIKeyEngine } from '@memberjunction/api-keys';
 import { UserCache } from '@memberjunction/sqlserver-dataprovider';
 import { ensureSkipRecords, getSkipConfig, DEFAULT_SKIP_BASE_URL, getSkipRegistryURI, resolveSkipApiKey } from '@askskip/core';
 import { SkipSDK } from './skip-sdk.js';
-import { APP_OWNED_SCOPE_PATHS } from './skip-callback-key-provisioner.js';
+import { APP_OWNED_SCOPE_PATHS, REQUIRED_SCOPE_PATHS } from './skip-callback-key-provisioner.js';
 
 // Side-effect import: ensure SkipProxyAgent's @RegisterClass(BaseAgent, 'SkipProxyAgent') runs.
 import './skip-agent.js';
 
-/** Scopes the callback-key provisioner assigns; all must exist for provisioning to succeed. */
-const REQUIRED_SCOPE_PATHS = [
-    'view:run', 'view:batch', 'query:run', 'query:create', 'query:update', 'query:delete',
-    'query:test', 'query:profile', 'search:execute', 'prompt:execute', 'agent:execute', 'embedding:generate',
-];
 const SKIP_SERVICE_EMAIL = 'skip-service@skip.internal';
 
 /** This package is ESM, so `__dirname` does not exist — derive it from the module URL. */
@@ -64,6 +59,7 @@ export class SkipMiddleware extends BaseServerMiddleware {
             // reads these env vars to override the production registry URI and authenticate.
             // Only set if not already explicitly configured (env vars win over derived values).
             await this.deriveRegistryEnvVars();
+            this.logAdvertisedCallbackURL();
 
             const engine = GetAPIKeyEngine();
             const scopes = engine.Scopes ?? [];
@@ -228,6 +224,18 @@ export class SkipMiddleware extends BaseServerMiddleware {
      */
     GetResolverPaths(): string[] {
         return [path.join(MODULE_DIR, 'resolvers', '*Resolver.{js,ts}')];
+    }
+
+    /**
+     * Reports the callback URL the SDK will advertise to Skip as `callingServerURL`
+     * (same derivation as skip-sdk's buildBaseRequest), so a misconfigured value —
+     * e.g. `http://localhost:4000/` on a deployed instance — is visible in boot logs.
+     */
+    private logAdvertisedCallbackURL(): void {
+        const config = getSkipConfig();
+        const callbackURL = config.publicUrl || `${config.baseUrl}:${config.graphqlPort}${config.graphqlRootPath}`;
+        LogStatus(`[skip-client] Callback URL advertised to Skip (callingServerURL): ${callbackURL}. ` +
+            'Set MJAPI_PUBLIC_URL (or GRAPHQL_BASE_URL/GRAPHQL_PORT/GRAPHQL_ROOT_PATH) if Skip cannot reach this address.');
     }
 
     /**
