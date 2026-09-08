@@ -159,6 +159,15 @@ export class SkipAPIClarifyingQuestionResponse extends SkipAPIResponse {
      * and instead use the responseForm to collect the user's response.
      */
     responseForm?: AgentResponseForm;
+
+    /**
+     * Artifact handling for the payload carried by this clarifying question (e.g. a PRD awaiting
+     * review). Skip sets `new_artifact` when that payload is the first draft of a NEW component in a
+     * conversation that already has one, so the caller does not add it as a version of the previous
+     * artifact; `new_artifact_version` (with `artifactId`) when it continues an existing component.
+     * Absent when the response carries no payload worth persisting.
+     */
+    artifactRequest?: SkipAPIArtifactRequest;
 }
 
 /**
