@@ -16,6 +16,7 @@ import {
     SkipAPIResponse,
     SkipAPIAnalysisCompleteResponse,
     SkipAPIClarifyingQuestionResponse,
+    SkipAPIArtifactRequest,
     SkipMessage
 } from "@askskip/types";
 import { SkipSDK, SkipCallOptions } from "./skip-sdk.js";
@@ -79,6 +80,40 @@ export interface SkipAgentPayload {
      * User-facing message (title or clarifying question)
      */
     message?: string;
+}
+
+/**
+ * Structural twin of MJ's ArtifactDirective (@memberjunction/ai-core-plus ≥ the release that adds it).
+ * Replace with `import type { ArtifactDirective } from "@memberjunction/ai-core-plus"` once the
+ * dependency is bumped.
+ */
+type ArtifactDirective = {
+    behavior: 'create-new' | 'version-source' | 'suppress';
+    targetArtifactId?: string;
+    name?: string;
+    description?: string;
+};
+
+/**
+ * Maps Skip's artifactRequest onto the MJ framework's per-step artifact directive.
+ * `new_artifact` → create a new artifact even if the run carries a sourceArtifactId
+ * (a new-topic build in a conversation that already has a component, #529).
+ * `new_artifact_version` → version the artifact Skip named (retargeting) or, absent an id,
+ * the run's sourceArtifactId.
+ */
+export function mapArtifactRequestToDirective(
+    request: SkipAPIArtifactRequest | undefined
+): ArtifactDirective | undefined {
+    if (!request) return undefined;
+    if (request.action === 'new_artifact') {
+        return { behavior: 'create-new', name: request.name, description: request.description };
+    }
+    return {
+        behavior: 'version-source',
+        targetArtifactId: request.artifactId,
+        name: request.name,
+        description: request.description,
+    };
 }
 
 /**
@@ -434,27 +469,35 @@ export class SkipProxyAgent extends BaseAgent {
 
         const componentSpec = response.componentOptions![0].option;
 
+        const directive = mapArtifactRequestToDirective(response.artifactRequest);
+        const directiveField = directive ? { artifactDirective: directive } : {};
         return {
             terminate: true,
             step: 'Success',
             message: skipMessage?.content || response.title || 'Analysis complete',
             newPayload: componentSpec,
-            actionableCommands
+            actionableCommands,
+            ...directiveField
         };
     }
 
     /**
-     * Handle clarifying_question phase
+     * Handle clarifying_question phase. The draft payload (e.g. a PRD awaiting review) is
+     * returned so the client can round-trip it; the artifact directive tells MJ whether that
+     * draft belongs to a NEW artifact or versions an existing one (#529).
      */
     private handleClarifyingQuestion(
         response: SkipAPIClarifyingQuestionResponse
     ): BaseAgentNextStep<ComponentSpec> {
+        const directive = mapArtifactRequestToDirective(response.artifactRequest);
+        const directiveField = directive ? { artifactDirective: directive } : {};
         return {
             terminate: true,
             step: 'Chat',
             message: response.clarifyingQuestion,
             responseForm: response.responseForm,
-            newPayload: response.payload as ComponentSpec
+            newPayload: response.payload as ComponentSpec,
+            ...directiveField
         };
     }
 
