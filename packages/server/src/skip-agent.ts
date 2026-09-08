@@ -10,6 +10,7 @@ import { BaseAgent } from "@memberjunction/ai-agents";
 import {
     ExecuteAgentParams,
     AgentConfiguration,
+    ArtifactDirective,
     BaseAgentNextStep
 } from "@memberjunction/ai-core-plus";
 import {
@@ -81,18 +82,6 @@ export interface SkipAgentPayload {
      */
     message?: string;
 }
-
-/**
- * Structural twin of MJ's ArtifactDirective (@memberjunction/ai-core-plus ≥ the release that adds it).
- * Replace with `import type { ArtifactDirective } from "@memberjunction/ai-core-plus"` once the
- * dependency is bumped.
- */
-type ArtifactDirective = {
-    behavior: 'create-new' | 'version-source' | 'suppress';
-    targetArtifactId?: string;
-    name?: string;
-    description?: string;
-};
 
 /**
  * Maps Skip's artifactRequest onto the MJ framework's per-step artifact directive.
