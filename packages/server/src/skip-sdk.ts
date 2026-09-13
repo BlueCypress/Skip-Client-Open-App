@@ -40,6 +40,11 @@ import {
     confirmCallbackKeyDelivered,
     discardUnconfirmedCallbackKey,
 } from './skip-callback-key-provisioner.js';
+import {
+    describeCallbackURL,
+    resolveSkipCallbackURL,
+    type SkipCallbackURLResolution,
+} from './skip-callback-url.js';
 import { GetAIAPIKey } from '@memberjunction/ai';
 import { AIEngine } from '@memberjunction/aiengine';
 import { CopyScalarsAndArrays, UUIDsEqual } from '@memberjunction/global';
@@ -256,6 +261,80 @@ interface SkipStreamMessage {
 }
 
 /**
+ * Whether a failed Skip response could be explained by this instance's callback credential,
+ * and should therefore trigger `resetCallbackKeyProvisioning()` plus one retry.
+ *
+ * The predicate this replaced required BOTH `code === invalid_callback_key` AND
+ * `retryAction === reprovision_and_retry`. That made one side's error taxonomy the gate on
+ * the other side's only recovery path, and the most predictable reason to need recovery did
+ * not fit through it: Skip's stored copy of the callback key became undecryptable
+ * ("Failed to decrypt the stored callback key for org <id> ... Credential not found: APIKey")
+ * and Skip classified that as `[unknown/internal_error]` — neither condition satisfied, so
+ * the self-heal never ran. Recovery became a hand-written UPDATE against the tenant database.
+ *
+ * So the test is inverted: reprovision unless the error is positively identified as something
+ * a fresh callback key cannot fix. A wasted key mint costs one row and one extra request, and
+ * self-heals on delivery; a wedge costs an operator with database access. The single retry in
+ * `chat()` is what bounds the cost, and it is load-bearing now that the trigger is broad.
+ *
+ * Returns false when the request did not advertise a callback credential at all — nothing
+ * about such a request can be blamed on one.
+ */
+export function shouldReprovisionCallbackKey(
+    detail: SkipErrorDetail | undefined,
+    callbackAuthIncluded: boolean,
+): boolean {
+    if (!callbackAuthIncluded) {
+        return false;
+    }
+
+    // No structured detail at all: an older brain, or an error raised outside the taxonomy.
+    // Unrecognised is precisely the case that wedged a tenant, so it reprovisions.
+    if (!detail) {
+        return true;
+    }
+
+    switch (detail.code) {
+        // Our OUTBOUND key to Skip, not Skip's inbound key to us. Different credential,
+        // different fix, and reprovisioning would destroy a working callback key for nothing.
+        case SkipErrorCode.invalid_api_key:
+            return false;
+        // Skip reached for this instance and could not connect, or got a 404/502/503. The
+        // callback address or this instance's availability is wrong; a new key changes neither.
+        case SkipErrorCode.endpoint_unreachable:
+        case SkipErrorCode.endpoint_offline:
+            return false;
+        // Skip holds no usable callback credential for this org — the textbook case.
+        case SkipErrorCode.invalid_callback_key:
+        case SkipErrorCode.missing_configuration:
+            return true;
+        // The catch-all code. The observed wedge arrived here.
+        case SkipErrorCode.internal_error:
+            return true;
+    }
+
+    // Skip explicitly asked for it, whatever the code.
+    if (detail.retryAction === SkipRetryAction.reprovision_and_retry) {
+        return true;
+    }
+
+    // Any other authentication or authorization failure: the scoped key is the credential
+    // in play, and a fresh one is minted with the current required scope set.
+    if (detail.type === 'authentication') {
+        return true;
+    }
+
+    // Unclassified type, same reasoning as a missing detail.
+    if (detail.type === 'unknown') {
+        return true;
+    }
+
+    // Positively identified as something else — ai_model, validation, database, component,
+    // query, server_unreachable. Leave the working key alone.
+    return false;
+}
+
+/**
  * Skip TypeScript SDK
  * Provides a clean interface for calling the Skip SaaS API
  */
@@ -343,6 +422,21 @@ export class SkipSDK {
             return { success: false, error };
         }
 
+        // Same reasoning one step further: a request that advertises a callback address
+        // Skip cannot dial is already lost, and loses in the most misleading way available —
+        // Skip replies "unable to reach your server", which reads as an outage or a bad key.
+        // Refuse here, name the variable, and mint no callback key for a doomed request.
+        const callbackAuthIncluded = options.includeCallbackAuth !== false;
+        let advertisedCallbackURL: string | undefined;
+        if (callbackAuthIncluded) {
+            const callback = await this.resolveCallbackServerURL();
+            if (callback.ok === false) {
+                LogError(`[SkipSDK] ${callback.error}`);
+                return { success: false, error: callback.error };
+            }
+            advertisedCallbackURL = callback.url;
+        }
+
         try {
             // Build the Skip API request
             const skipRequest = await this.buildSkipRequest(options);
@@ -407,28 +501,42 @@ export class SkipSDK {
                 };
             }
 
+            const detail = finalResponse.errorDetail;
+            const callbackCredentialSuspect = finalResponse.success === false
+                && shouldReprovisionCallbackKey(detail, callbackAuthIncluded);
+
             // A parsed final response means Skip read the request body, so any newly
             // provisioned callback key in it was stored — Skip resolves the callback
-            // credential before running any workflow, so a Skip-side error still
-            // implies receipt. Confirming here is what makes the key safe to keep
-            // across a restart; anything short of this leaves it discardable.
-            confirmCallbackKeyDelivered();
+            // credential before running any workflow, so a Skip-side *workflow* error
+            // still implies receipt. Confirming is what makes the key safe to keep
+            // across a restart; anything short of it leaves the key discardable.
+            //
+            // That reasoning is exactly circular for the errors below, though: the step it
+            // relies on — Skip resolving the callback credential — is the step that failed.
+            // Confirming there wrote `deliveryConfirmed = true` for a response whose whole
+            // content was "your callback credential does not work", which then blocked
+            // discardUnconfirmedCallbackKey() for the rest of the process lifetime and
+            // cemented the row. The provisioner's own docstring predicted the outcome:
+            // "unrecoverable without deleting the row by hand". So confirmation is withheld
+            // for the credential-suspect class and granted for everything else.
+            if (!callbackCredentialSuspect) {
+                confirmCallbackKeyDelivered();
+            }
 
             // Check if Skip itself reported an error (success: false in the response body)
             if (finalResponse.success === false) {
-                const detail = finalResponse.errorDetail;
-                const skipError = detail?.message || 'Skip API returned an error response';
+                const skipError = this.describeSkipError(detail, advertisedCallbackURL);
                 LogError(`[SkipSDK] Skip API error: ${skipError}` +
                     (detail ? ` [${detail.type}/${detail.code}]` : ''));
 
-                // Handle callback key re-provisioning: if Skip reports the callback
-                // key is invalid and suggests re-provisioning, reset the provisioner
-                // state and retry exactly once. The retry flag on options prevents
-                // infinite loops.
-                if (detail?.code === SkipErrorCode.invalid_callback_key
-                    && detail.retryAction === SkipRetryAction.reprovision_and_retry
-                    && !options._isCallbackKeyRetry) {
-                    LogStatus('[SkipSDK] Callback key invalid — revoking old key and re-provisioning');
+                // Re-provision the callback key and retry exactly once whenever the failure
+                // could be a callback-credential failure — not only when Skip labels it one.
+                // See shouldReprovisionCallbackKey() for why that distinction wedged a tenant.
+                // The retry flag on options prevents infinite loops.
+                if (callbackCredentialSuspect && !options._isCallbackKeyRetry) {
+                    LogStatus('[SkipSDK] Skip failed in a way the callback credential could explain ' +
+                        `[${detail?.type ?? 'no-detail'}/${detail?.code ?? 'no-code'}] — ` +
+                        'revoking the old callback key and re-provisioning');
                     await resetCallbackKeyProvisioning();
                     return this.chat({ ...options, _isCallbackKeyRetry: true });
                 }
@@ -508,6 +616,28 @@ export class SkipSDK {
                 : 'Skip request failed in the processing queue';
         }
         return 'The Skip API stream ended before a final response was received. Please try again.';
+    }
+
+    /**
+     * Turns Skip's error detail into the message the caller sees.
+     *
+     * Passes Skip's own text through unchanged except for one class: when Skip reports that it
+     * could not reach this instance, it words that as "unable to reach your server ... if you're
+     * using a tunnel service like ngrok, verify the tunnel is active" — a sentence that sends
+     * the reader to check an outage, a tunnel, or an API key, none of which is the usual cause.
+     * The usual cause is the address we handed Skip, which only this side knows, so append it.
+     */
+    private describeSkipError(detail: SkipErrorDetail | undefined, advertisedCallbackURL?: string): string {
+        const message = detail?.message || 'Skip API returned an error response';
+        const isUnreachable = detail?.type === 'server_unreachable'
+            || detail?.code === SkipErrorCode.endpoint_unreachable
+            || detail?.code === SkipErrorCode.endpoint_offline;
+        if (!isUnreachable || !advertisedCallbackURL) {
+            return message;
+        }
+        return `${message} (Skip was told to call this instance back at ${advertisedCallbackURL} — ` +
+            `if that address is not reachable from outside this network, set MJAPI_PUBLIC_URL to ` +
+            `one that is and restart MJAPI.)`;
     }
 
     /**
@@ -600,7 +730,15 @@ export class SkipSDK {
         let callingServerURL: string | undefined;
         let callingServerAPIKey: string | undefined;
         if (includeCallbackAuth) {
-            callingServerURL = await this.resolveCallbackServerURL();
+            // Throwing rather than composing a dead address. chat() already checked this and
+            // returned the message to the caller, so this guard only fires for the entry
+            // points that build a base request directly (evalRunAgent/evalRunPrompt) — where
+            // an unreachable callback URL is just as fatal and just as worth naming.
+            const callback = await this.resolveCallbackServerURL();
+            if (callback.ok === false) {
+                throw new Error(callback.error);
+            }
+            callingServerURL = callback.url;
 
             // Auto-provisioned scoped API key. Returns the raw key ONLY when
             // a new key was just created (first time connecting to this Skip host).
@@ -635,7 +773,7 @@ export class SkipSDK {
      * lazy: unit tests and non-MJAPI contexts cannot load that heavy module, and
      * for them the env-derived values remain authoritative.
      */
-    private async resolveCallbackServerURL(): Promise<string> {
+    private async resolveCallbackServerURL(): Promise<SkipCallbackURLResolution> {
         const skipConfig = getSkipConfig();
         let { baseUrl, publicUrl, graphqlPort, graphqlRootPath } = skipConfig;
         try {
@@ -647,12 +785,17 @@ export class SkipSDK {
         } catch {
             // Not running inside MJAPI — fall back to getSkipConfig() env values.
         }
-        const url = publicUrl || `${baseUrl}:${graphqlPort}${graphqlRootPath}`;
+        // A loopback address is refused rather than composed. MJServer's configInfo defaults
+        // baseUrl to http://localhost, so the overlay above can reintroduce the very value
+        // getSkipConfig() stopped supplying; resolveSkipCallbackURL() judges the host, not
+        // which layer produced it.
+        const resolution = resolveSkipCallbackURL({ baseUrl, publicUrl, graphqlPort, graphqlRootPath });
         if (!SkipSDK.__callbackURLLogged) {
             SkipSDK.__callbackURLLogged = true;
-            LogStatus(`[SkipSDK] Resolved Skip callback URL: ${url}`);
+            const line = `[SkipSDK] ${describeCallbackURL(resolution)}`;
+            resolution.ok ? LogStatus(line) : LogError(line);
         }
-        return url;
+        return resolution;
     }
 
     /**

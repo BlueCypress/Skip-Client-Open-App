@@ -32,11 +32,15 @@ vi.mock('../../src/skip-callback-key-provisioner.js', () => ({
 }));
 
 // Mock @askskip/core
+// A routable publicUrl, because chat() now refuses to send a request whose callback
+// address Skip cannot dial. `http://localhost` — what this mock used to return — is
+// exactly the value that refusal exists to catch, and every test below would stop at it.
 vi.mock('@askskip/core', () => ({
     getSkipConfig: () => ({
         skipURL: 'https://test.askskip.ai',
         apiKey: 'test-api-key',
         baseUrl: 'http://localhost',
+        publicUrl: 'https://mjapi.test.example.com/',
         graphqlPort: 4000,
         graphqlRootPath: '/',
         entitiesToSend: { excludeSchemas: [], includeEntitiesFromExcludedSchemas: [] },
@@ -85,7 +89,12 @@ vi.mock('@memberjunction/global', async (importOriginal) => ({
 // The SDK lazily imports MJServer's configInfo when resolving the callback URL;
 // mock it so unit tests never load that heavy module.
 vi.mock('@memberjunction/server', () => ({
-    configInfo: { baseUrl: 'http://localhost', publicUrl: '', graphqlPort: 4000, graphqlRootPath: '/' },
+    configInfo: {
+        baseUrl: 'http://localhost',
+        publicUrl: 'https://mjapi.test.example.com/',
+        graphqlPort: 4000,
+        graphqlRootPath: '/',
+    },
 }));
 
 vi.mock('mssql', () => ({}));
@@ -320,11 +329,16 @@ describe('SkipSDK error handling', () => {
             expect(mockResetCallbackKeyProvisioning).not.toHaveBeenCalled();
         });
 
-        it('does not retry when retryAction is not reprovision_and_retry', async () => {
+        it('reprovisions on invalid_callback_key even when retryAction says do_not_retry', async () => {
+            // Inverted deliberately. This test used to assert that Skip had to agree on BOTH
+            // the code and the retryAction before the client would recover — one side's error
+            // taxonomy gating the other side's only recovery path. `invalid_callback_key` is
+            // already a complete statement that the credential is unusable; what Skip advises
+            // doing about it cannot make a fresh key the wrong answer.
             const { sdk, setResponses } = createSdkWithMockedSSE();
             const detail = buildErrorDetail({
                 code: SkipErrorCode.invalid_callback_key,
-                retryAction: SkipRetryAction.do_not_retry, // different action
+                retryAction: SkipRetryAction.do_not_retry,
             });
 
             setResponses([{
@@ -340,7 +354,7 @@ describe('SkipSDK error handling', () => {
             const result = await sdk.chat(makeCallOptions());
 
             expect(result.success).toBe(false);
-            expect(mockResetCallbackKeyProvisioning).not.toHaveBeenCalled();
+            expect(mockResetCallbackKeyProvisioning).toHaveBeenCalledOnce();
         });
     });
 
