@@ -234,6 +234,78 @@ describe('skip-callback-key-provisioner', () => {
         });
     });
 
+    describe('a reset is observable in the same process (fix: no restart to verify recovery)', () => {
+        it('reports what it deleted and the state on either side of it', async () => {
+            // Recovering the production wedge meant an operator flipping MJAPIKey.Status in
+            // the tenant database and then restarting MJAPI — the restart was mandatory
+            // because nothing outside the request path could see, or change, this state. A
+            // caller can now reset and be told it landed, without inferring it from a reboot.
+            state.existingKeyRows = [{ ID: 'existing-1', Label: 'Skip Callback: https://skip.example.com', Status: 'Active' }];
+            const mod = await importFreshProvisioner();
+
+            await mod.getSkipCallbackKey();
+            expect(mod.getCallbackKeyProvisioningState()).toEqual({
+                provisioningComplete: true,
+                hasUndeliveredRawKey: false,
+                deliveryConfirmed: true,
+            });
+
+            const result = await mod.resetCallbackKeyProvisioning();
+
+            expect(result.keyDeleted).toBe(true);
+            expect(state.deletedKeyIDs).toContain('existing-1');
+            expect(result.before.provisioningComplete).toBe(true);
+            expect(result.after).toEqual({
+                provisioningComplete: false,
+                hasUndeliveredRawKey: false,
+                deliveryConfirmed: false,
+            });
+        });
+
+        it('reports keyDeleted false when there was no key row to delete', async () => {
+            // Truthful reporting matters more than the happy path: an admin surface that
+            // claims a deletion it did not perform is how a wedge gets declared fixed twice.
+            const mod = await importFreshProvisioner();
+
+            const result = await mod.resetCallbackKeyProvisioning();
+
+            expect(result.keyDeleted).toBe(false);
+            expect(state.deletedKeyIDs).toHaveLength(0);
+        });
+
+        it('mints and sends a fresh key on the next call after a reset', async () => {
+            state.existingKeyRows = [{ ID: 'existing-1', Label: 'Skip Callback: https://skip.example.com', Status: 'Active' }];
+            const mod = await importFreshProvisioner();
+
+            // Pre-existing row: nothing is sent, because Skip is assumed to hold it.
+            expect(await mod.getSkipCallbackKey()).toBeNull();
+
+            state.existingKeyRows = [];
+            await mod.resetCallbackKeyProvisioning();
+
+            // Same process, no restart: the raw key is minted and offered to Skip again.
+            expect(await mod.getSkipCallbackKey()).toBe('raw-key-123');
+            expect(mod.getCallbackKeyProvisioningState().hasUndeliveredRawKey).toBe(true);
+        });
+
+        it('reports an undelivered key without exposing its value', async () => {
+            const mod = await importFreshProvisioner();
+
+            await mod.getSkipCallbackKey();
+            const snapshot = mod.getCallbackKeyProvisioningState();
+
+            expect(snapshot.hasUndeliveredRawKey).toBe(true);
+            expect(JSON.stringify(snapshot)).not.toContain('raw-key-123');
+
+            mod.confirmCallbackKeyDelivered();
+            expect(mod.getCallbackKeyProvisioningState()).toEqual({
+                provisioningComplete: true,
+                hasUndeliveredRawKey: false,
+                deliveryConfirmed: true,
+            });
+        });
+    });
+
     describe('key label normalization (fix: trailing slash must not fork key identity)', () => {
         it('strips trailing slashes from skipURL when looking up the existing key', async () => {
             state.skipURL = 'https://skip.example.com///';

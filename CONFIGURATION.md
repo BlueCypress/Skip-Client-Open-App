@@ -12,6 +12,7 @@ Set these in your MJAPI environment (`.env` file or hosting platform).
 |---|---|
 | `ASK_SKIP_API_KEY` | Outbound API key for authenticating with the Skip API. Stored encrypted by the setup wizard; env var is a fallback. |
 | `MJ_BASE_ENCRYPTION_KEY` | Encryption key for the MJ credential store. Generate with `openssl rand -base64 32`. |
+| `MJAPI_PUBLIC_URL` | The address Skip calls back on. Required on any instance Skip reaches over a network — see [Callback URL Construction](#callback-url-construction). Skip requests are refused with a specific error until it is set. |
 
 Organization identification is handled automatically via the Skip API key -- no separate org ID or info variables are needed.
 
@@ -20,8 +21,7 @@ Organization identification is handled automatically via the Skip API key -- no 
 | Variable | Default | Purpose |
 |---|---|---|
 | `ASK_SKIP_URL` | `https://brain-prod.askskip.ai` | Skip API base URL. Only set this when pointing at a non-production Skip instance. The `/chat` and `/eval/*` endpoints are derived automatically. |
-| `GRAPHQL_BASE_URL` | `http://localhost` | MJAPI base URL used to construct the callback URL that Skip Brain calls back to. |
-| `MJAPI_PUBLIC_URL` | _(none)_ | Public-facing callback URL. When set, takes precedence over `GRAPHQL_BASE_URL:GRAPHQL_PORT`. Use this when MJAPI is behind a reverse proxy or tunnel (e.g., ngrok). |
+| `GRAPHQL_BASE_URL` | _(none)_ | MJAPI base URL used to construct the callback URL when `MJAPI_PUBLIC_URL` is unset. Must name a host reachable from outside this machine — a loopback value is refused, not used. |
 | `GRAPHQL_PORT` | `4000` | MJAPI port, appended to `GRAPHQL_BASE_URL` when `MJAPI_PUBLIC_URL` is not set. |
 | `GRAPHQL_ROOT_PATH` | `/` | GraphQL endpoint path, appended to the callback URL. |
 | `DB_PLATFORM` | _(none)_ | Database platform. Set to `postgresql` if running against PostgreSQL; otherwise SQL Server is assumed. Uses the same env var as MJ's `resolveDbPlatformFromEnv()`. Legacy `DB_PROVIDER` is still accepted as a fallback. Tells Skip Brain which SQL dialect to generate. |
@@ -52,19 +52,49 @@ That is expected on an instance deliberately pointed at another brain with its e
 
 ### Callback URL Construction
 
-The callback URL is how Skip Brain reaches back to your MJAPI to run views, queries, and other operations. It is constructed as:
+The callback URL is how Skip Brain reaches back to your MJAPI to run views, queries, and other
+operations. It is the one address in this document that a **remote** service dials, which is why
+it is the one address with no default.
 
-- **If `MJAPI_PUBLIC_URL` is set:** uses that value directly
-- **Otherwise:** `${GRAPHQL_BASE_URL}:${GRAPHQL_PORT}${GRAPHQL_ROOT_PATH}`
+Resolution order:
 
-Examples:
+1. **`MJAPI_PUBLIC_URL` set** — used verbatim, whatever it is.
+2. **Otherwise `${GRAPHQL_BASE_URL}:${GRAPHQL_PORT}${GRAPHQL_ROOT_PATH}`** — but only when
+   `GRAPHQL_BASE_URL` names a routable host.
+3. **Otherwise the request is refused**, with an error naming `MJAPI_PUBLIC_URL`.
+
 ```
+# Behind a proxy, a tunnel, or any normal deployment:
+MJAPI_PUBLIC_URL=https://mjapi.example.com/
+
 # Behind ngrok:
 MJAPI_PUBLIC_URL=https://abc123.ngrok.io
 
-# Direct access (default):
-# http://localhost:4000/
+# MJAPI and the Skip brain on the same machine — an explicit loopback is honoured:
+MJAPI_PUBLIC_URL=http://localhost:4000/
 ```
+
+#### Why a loopback address is refused rather than sent
+
+`GRAPHQL_BASE_URL` defaults to `http://localhost` in MJServer, and that is correct there: every
+URL MJServer builds from it is dialled by the MJAPI process itself. Handed to Skip's cloud, the
+same value names Skip's own container.
+
+Two production tenants shipped `http://localhost:4000/` as their callback address. Skip answered
+every question with:
+
+> I'm unable to reach your server. Please make sure your MJAPI instance is running and accessible.
+> If you're using a tunnel service like ngrok, verify the tunnel is active.
+
+MJAPI was running, was accessible, and there was no tunnel. The sentence points at an outage, a
+tunnel, and a credential — none of which was the cause — and it was diagnosed as a bad API key.
+
+So this app no longer supplies a default that cannot work. An unresolvable callback URL is
+reported at boot, and any Skip request that would carry it is refused locally with the variable
+to set. A loopback address is still entirely legitimate for local development; it just has to be
+stated through `MJAPI_PUBLIC_URL` rather than inherited.
+
+Setting `MJAPI_PUBLIC_URL` takes effect on restart.
 
 ## skip.config.cjs
 
