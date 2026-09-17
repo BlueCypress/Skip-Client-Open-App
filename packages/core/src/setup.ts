@@ -16,6 +16,7 @@
 import { LogStatus, LogError } from '@memberjunction/core';
 import type { UserInfo, IMetadataProvider } from '@memberjunction/core';
 import { CredentialEngine } from '@memberjunction/credentials';
+import type { MJCredentialEntity } from '@memberjunction/core-entities';
 import { getSkipConfig, DEFAULT_ENTITIES_TO_SEND } from './skip-config.js';
 import { ensureSkipRecords } from './skip-records.js';
 import { existsSync, writeFileSync } from 'fs';
@@ -49,12 +50,21 @@ export default async function setup(payload: SkipHookPayload): Promise<void> {
 
     log('Configuring the Skip Client app...');
 
+    // Look up any credential a previous install stored, so re-runs rotate it instead of
+    // colliding with the UNIQUE (CredentialTypeID, Name) constraint, and so a blank entry
+    // means "keep what I have" rather than "no key".
+    const existingCredential = await findSkipApiKeyCredential(contextUser);
+
     // The only interactive prompt is the API key — everything else uses defaults or env vars.
     // The Skip base URL defaults to production (baked into @askskip/core); override via ASK_SKIP_URL.
+    // The current key is a secret: never pass it as a visible prompt default.
+    const promptMessage = existingCredential
+        ? 'Skip API key (ASK_SKIP_API_KEY) — leave blank to keep the existing stored key'
+        : 'Skip API key (ASK_SKIP_API_KEY)';
     const apiKey = interactive
         ? cb!.OnPromptPassword
-            ? await cb!.OnPromptPassword('Skip API key (ASK_SKIP_API_KEY)')
-            : await cb!.OnPromptInput!('Skip API key (ASK_SKIP_API_KEY)', { default: env.apiKey })
+            ? await cb!.OnPromptPassword(promptMessage)
+            : await cb!.OnPromptInput!(promptMessage)
         : env.apiKey;
 
     // Persist the secret (encrypted) via the MJ credential store. The SDK reads it back
@@ -67,27 +77,10 @@ export default async function setup(payload: SkipHookPayload): Promise<void> {
                 'in the MJAPI environment as a fallback.',
             );
         } else {
-            try {
-                await CredentialEngine.Instance.Config(false, contextUser);
-                await CredentialEngine.Instance.storeCredential(
-                    'API Key',
-                    'Skip API Key',
-                    { apiKey },
-                    {
-                        description: 'Outbound Skip API key used by the Skip Client app (x-api-key header to the Skip API).',
-                    },
-                    contextUser,
-                );
-                log('✓ Stored the Skip API key in the encrypted MJ credential store ("Skip API Key").');
-            } catch (e) {
-                LogError(
-                    `[skip-client setup] Could not store the Skip API key credential: ` +
-                    `${e instanceof Error ? e.message : String(e)}. The app will fall back to the ` +
-                    `ASK_SKIP_API_KEY environment variable. (This usually means the "API Key" credential ` +
-                    `type is not seeded on this instance — set ASK_SKIP_API_KEY in env instead.)`,
-                );
-            }
+            await storeOrUpdateSkipApiKey(apiKey, existingCredential, contextUser, log);
         }
+    } else if (existingCredential) {
+        log('✓ Kept the existing "Skip API Key" credential (no new key entered).');
     } else {
         log('No Skip API key provided; set ASK_SKIP_API_KEY in the MJAPI environment before first use.');
     }
@@ -101,10 +94,69 @@ export default async function setup(payload: SkipHookPayload): Promise<void> {
     try {
         await ensureSkipRecords(payload.Provider as IMetadataProvider, contextUser, log);
     } catch (e) {
-        LogError(`[skip-client setup] Could not create Skip metadata records: ${e instanceof Error ? e.message : String(e)}`);
+        LogError(`[skip-client setup] Could not create Skip metadata records: ${errorText(e)}`);
     }
 
     log('Skip Client app setup complete. Restart MJAPI to activate the Skip proxy agent.');
+}
+
+const API_KEY_CREDENTIAL_TYPE = 'API Key';
+const SKIP_API_KEY_CREDENTIAL_NAME = 'Skip API Key';
+
+/** Extracts a meaningful message from an unknown caught error. */
+function errorText(e: unknown): string {
+    return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Returns the stored "Skip API Key" credential if one exists. Best-effort: any engine
+ * failure (e.g. credentials entities not available yet) reads as "no credential".
+ */
+async function findSkipApiKeyCredential(contextUser: UserInfo): Promise<MJCredentialEntity | undefined> {
+    try {
+        await CredentialEngine.Instance.Config(false, contextUser);
+        return CredentialEngine.Instance.getCredentialByName(API_KEY_CREDENTIAL_TYPE, SKIP_API_KEY_CREDENTIAL_NAME);
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Persists the Skip API key: rotates the existing credential when one is present
+ * (storeCredential always INSERTs and would violate the UNIQUE (CredentialTypeID, Name)
+ * constraint on a re-run), otherwise stores a fresh one. Never throws — setup must
+ * survive a partial install.
+ */
+async function storeOrUpdateSkipApiKey(
+    apiKey: string,
+    existingCredential: MJCredentialEntity | undefined,
+    contextUser: UserInfo,
+    log: (m: string) => void,
+): Promise<void> {
+    try {
+        await CredentialEngine.Instance.Config(false, contextUser);
+        if (existingCredential) {
+            await CredentialEngine.Instance.updateCredential(existingCredential.ID, { apiKey }, contextUser);
+            log('✓ Updated the Skip API key in the encrypted MJ credential store ("Skip API Key").');
+        } else {
+            await CredentialEngine.Instance.storeCredential(
+                API_KEY_CREDENTIAL_TYPE,
+                SKIP_API_KEY_CREDENTIAL_NAME,
+                { apiKey },
+                {
+                    description: 'Outbound Skip API key used by the Skip Client app (x-api-key header to the Skip API).',
+                },
+                contextUser,
+            );
+            log('✓ Stored the Skip API key in the encrypted MJ credential store ("Skip API Key").');
+        }
+    } catch (e: unknown) {
+        LogError(
+            `[skip-client setup] Could not persist the Skip API key credential: ${errorText(e)}. ` +
+            `The key you entered was NOT saved — the app will fall back to the ASK_SKIP_API_KEY ` +
+            `environment variable, so set it there or fix the underlying issue and re-run setup.`,
+        );
+    }
 }
 
 /**
@@ -168,6 +220,6 @@ async function maybeCreateSkipConfigFile(
         writeFileSync(configPath, buildSkipConfigContent(), 'utf-8');
         log(`✓ Created ${configPath} with default entity-filtering settings. Edit it to customize which entities Skip can see.`);
     } catch (e) {
-        LogError(`[skip-client setup] Could not write skip.config.cjs: ${e instanceof Error ? e.message : String(e)}`);
+        LogError(`[skip-client setup] Could not write skip.config.cjs: ${errorText(e)}`);
     }
 }

@@ -9,6 +9,7 @@
 import { createRequire } from 'module';
 import { resolve, dirname, parse } from 'path';
 import { CredentialEngine } from '@memberjunction/credentials';
+import { LogError, LogStatus } from '@memberjunction/core';
 import type { UserInfo } from '@memberjunction/core';
 
 /** Default Skip API base URL. Override with ASK_SKIP_URL env var for non-production environments. */
@@ -161,29 +162,70 @@ export const DEFAULT_ENTITIES_TO_SEND: SkipEntitiesToSendConfig = {
     ],
 };
 
+/** One-shot flag so on-demand loads don't repeat the "loaded from <path>" status line. */
+let configLoadLogged = false;
+
 /**
- * Loads the `skip.config.cjs` file, searching from the MJAPI working directory
- * up to the repository root. This handles mono-repo layouts where `skip.config.cjs`
- * lives at the repo root but the MJAPI process CWD is a nested `apps/MJAPI` directory.
+ * True when `error` is Node's MODULE_NOT_FOUND for the `./skip.config.cjs` probe itself —
+ * i.e. no config file exists at this directory level. A MODULE_NOT_FOUND raised while
+ * *evaluating* an existing config (a broken `require()` inside it) names the other module
+ * in its message and lists the config file in its `requireStack`, so it is NOT not-found.
+ */
+function isConfigFileNotFound(error: unknown, configPath: string): boolean {
+    if (!(error instanceof Error)) {
+        return false;
+    }
+    const err = error as Error & { code?: string; requireStack?: string[] };
+    return (
+        err.code === 'MODULE_NOT_FOUND' &&
+        err.message.startsWith(`Cannot find module './skip.config.cjs'`) &&
+        !(err.requireStack ?? []).includes(configPath)
+    );
+}
+
+/**
+ * Loads the `skip.config.cjs` file, searching from `startDir` (the MJAPI working
+ * directory by default) up to and including the filesystem root. This handles mono-repo
+ * layouts where `skip.config.cjs` lives at the repo root but the MJAPI process CWD is a
+ * nested `apps/MJAPI` directory.
  *
  * Uses `createRequire` for ESM compatibility — the config file is CommonJS (.cjs)
  * so it must be loaded via require(), not import().
+ *
+ * A config file that exists but fails to evaluate (syntax error, broken internal
+ * require) stops the search: loading a *different* skip.config.cjs from an ancestor
+ * directory would silently apply the wrong configuration. The failure is logged loudly
+ * and `null` is returned so built-in defaults apply — boot paths must survive.
  */
-function loadSkipConfigFile(): Record<string, unknown> | null {
-    let dir = process.cwd();
-    const root = parse(dir).root;
+export function loadSkipConfigFile(startDir: string = process.cwd()): Record<string, unknown> | null {
+    const root = parse(startDir).root;
+    let dir = startDir;
 
-    while (dir !== root) {
+    for (;;) {
+        const configPath = resolve(dir, 'skip.config.cjs');
         try {
             const req = createRequire(resolve(dir, '__placeholder.js'));
-            return req('./skip.config.cjs');
-        } catch {
-            // Not found at this level — walk up
+            const cfg = req('./skip.config.cjs') as Record<string, unknown>;
+            if (!configLoadLogged) {
+                configLoadLogged = true;
+                LogStatus(`[skip-config] Loaded skip.config.cjs from ${configPath}`);
+            }
+            return cfg;
+        } catch (error: unknown) {
+            if (!isConfigFileNotFound(error, configPath)) {
+                LogError(
+                    `[skip-config] skip.config.cjs exists at ${configPath} but failed to load: ` +
+                    `${error instanceof Error ? error.message : String(error)}. ` +
+                    `Built-in defaults will be used until the file is fixed or removed.`,
+                );
+                return null;
+            }
+        }
+        if (dir === root) {
+            return null;
         }
         dir = dirname(dir);
     }
-
-    return null;
 }
 
 /**

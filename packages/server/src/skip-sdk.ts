@@ -26,6 +26,7 @@ import {
     SkipRetryAction,
     SkipErrorDetail,
 } from '@askskip/types';
+import { isValidUUID, requireValidUUID } from './uuid-guard.js';
 import { DataContext } from '@memberjunction/data-context';
 import { IMetadataProvider, UserInfo, LogStatus, LogError, Metadata, RunQuery, RunView, EntityInfo, EntityFieldInfo, EntityFieldValueInfo, DatabaseProviderBase } from '@memberjunction/core';
 import { MJConversationDetailEntity, QueryEngine } from '@memberjunction/core-entities';
@@ -288,6 +289,17 @@ export class SkipSDK {
     private static __skipEntitiesCache$: BehaviorSubject<Promise<EntityInfo[]> | null> = new BehaviorSubject<Promise<EntityInfo[]> | null>(null);
     private static __lastRefreshTime: number = 0;
 
+    /**
+     * In-flight entity refresh, shared across all instances. `__lastRefreshTime`
+     * only advances when a refresh COMPLETES, so without this every concurrent
+     * cold call would see an expired cache and launch its own full refresh
+     * (per-field SELECT DISTINCT sweeps) — a cold-start thundering herd.
+     */
+    private static __refreshInFlight: Promise<EntityInfo[]> | null = null;
+
+    /** Ensures the resolved callback URL is logged only once per process. */
+    private static __callbackURLLogged = false;
+
     constructor(config?: SkipSDKConfig) {
         // Use provided config or fall back to Skip client env config
         const skipConfig = getSkipConfig();
@@ -369,53 +381,7 @@ export class SkipSDK {
                 }
             );
 
-            // The last response is the final one
-            if (responses && responses.length > 0) {
-                const finalResponse = responses[responses.length - 1].value as SkipAPIResponse;
-
-                // A parsed final response means Skip read the request body, so any newly
-                // provisioned callback key in it was stored — Skip resolves the callback
-                // credential before running any workflow, so a Skip-side error still
-                // implies receipt. Confirming here is what makes the key safe to keep
-                // across a restart; anything short of this leaves it discardable.
-                confirmCallbackKeyDelivered();
-
-                // Check if Skip itself reported an error (success: false in the response body)
-                if (finalResponse.success === false) {
-                    const detail = finalResponse.errorDetail;
-                    const skipError = detail?.message || 'Skip API returned an error response';
-                    LogError(`[SkipSDK] Skip API error: ${skipError}` +
-                        (detail ? ` [${detail.type}/${detail.code}]` : ''));
-
-                    // Handle callback key re-provisioning: if Skip reports the callback
-                    // key is invalid and suggests re-provisioning, reset the provisioner
-                    // state and retry exactly once. The retry flag on options prevents
-                    // infinite loops.
-                    if (detail?.code === SkipErrorCode.invalid_callback_key
-                        && detail.retryAction === SkipRetryAction.reprovision_and_retry
-                        && !options._isCallbackKeyRetry) {
-                        LogStatus('[SkipSDK] Callback key invalid — revoking old key and re-provisioning');
-                        await resetCallbackKeyProvisioning();
-                        return this.chat({ ...options, _isCallbackKeyRetry: true });
-                    }
-
-                    return {
-                        success: false,
-                        response: finalResponse,
-                        responsePhase: finalResponse.responsePhase,
-                        error: skipError,
-                        errorDetail: detail,
-                        allResponses: responses
-                    };
-                }
-
-                return {
-                    success: true,
-                    response: finalResponse,
-                    responsePhase: finalResponse.responsePhase,
-                    allResponses: responses
-                };
-            } else {
+            if (!responses || responses.length === 0) {
                 // Nothing came back, so there is no evidence Skip read the request.
                 await discardUnconfirmedCallbackKey();
                 return {
@@ -423,6 +389,66 @@ export class SkipSDK {
                     error: 'No response received from Skip API'
                 };
             }
+
+            // Queue events arrive flat ({responsePhase, message, error} — no `.value`),
+            // so the last event is not necessarily the wrapped final Skip response.
+            const finalResponse = this.findFinalResponse(responses);
+            if (!finalResponse) {
+                // The stream ended on a flat queue error or with only queued/status
+                // events — either way Skip never proved it read the request body, so
+                // a newly provisioned callback key cannot be trusted as delivered.
+                await discardUnconfirmedCallbackKey();
+                const error = this.describeMissingFinalResponse(responses[responses.length - 1]);
+                LogError(`[SkipSDK] ${error}`);
+                return {
+                    success: false,
+                    error,
+                    allResponses: responses
+                };
+            }
+
+            // A parsed final response means Skip read the request body, so any newly
+            // provisioned callback key in it was stored — Skip resolves the callback
+            // credential before running any workflow, so a Skip-side error still
+            // implies receipt. Confirming here is what makes the key safe to keep
+            // across a restart; anything short of this leaves it discardable.
+            confirmCallbackKeyDelivered();
+
+            // Check if Skip itself reported an error (success: false in the response body)
+            if (finalResponse.success === false) {
+                const detail = finalResponse.errorDetail;
+                const skipError = detail?.message || 'Skip API returned an error response';
+                LogError(`[SkipSDK] Skip API error: ${skipError}` +
+                    (detail ? ` [${detail.type}/${detail.code}]` : ''));
+
+                // Handle callback key re-provisioning: if Skip reports the callback
+                // key is invalid and suggests re-provisioning, reset the provisioner
+                // state and retry exactly once. The retry flag on options prevents
+                // infinite loops.
+                if (detail?.code === SkipErrorCode.invalid_callback_key
+                    && detail.retryAction === SkipRetryAction.reprovision_and_retry
+                    && !options._isCallbackKeyRetry) {
+                    LogStatus('[SkipSDK] Callback key invalid — revoking old key and re-provisioning');
+                    await resetCallbackKeyProvisioning();
+                    return this.chat({ ...options, _isCallbackKeyRetry: true });
+                }
+
+                return {
+                    success: false,
+                    response: finalResponse,
+                    responsePhase: finalResponse.responsePhase,
+                    error: skipError,
+                    errorDetail: detail,
+                    allResponses: responses
+                };
+            }
+
+            return {
+                success: true,
+                response: finalResponse,
+                responsePhase: finalResponse.responsePhase,
+                allResponses: responses
+            };
 
         } catch (error) {
             LogError(`[SkipSDK] Error calling Skip API: ${error}`);
@@ -438,7 +464,7 @@ export class SkipSDK {
             let userFriendlyError = rawError;
             const errorStr = rawError.toLowerCase();
 
-            if (errorStr.includes('stream error') || errorStr.includes('aborted') || errorStr.includes('econnreset')) {
+            if (errorStr.includes('stream error') || errorStr.includes('stream closed') || errorStr.includes('aborted') || errorStr.includes('econnreset')) {
                 userFriendlyError = 'The Skip analysis service became unavailable during processing. Please try again.';
             } else if (errorStr.includes('econnrefused') || errorStr.includes('enotfound')) {
                 userFriendlyError = 'Unable to connect to the Skip analysis service. The service may be temporarily unavailable.';
@@ -451,6 +477,37 @@ export class SkipSDK {
                 error: userFriendlyError
             };
         }
+    }
+
+    /**
+     * Locates the final wrapped Skip response in the event stream, scanning
+     * backwards for the last `{type: 'complete', value: {...}}` event. Flat queue
+     * events carry no `.value` and wrapped status updates are interim, so neither
+     * qualifies. Returns undefined when no final response arrived.
+     */
+    private findFinalResponse(responses: SkipStreamMessage[]): SkipAPIResponse | undefined {
+        for (let i = responses.length - 1; i >= 0; i--) {
+            const event = responses[i];
+            if (event.type === 'complete' && event.value && typeof event.value === 'object') {
+                return event.value;
+            }
+        }
+        return undefined;
+    }
+
+    /**
+     * Builds the failure message for a stream that ended without a wrapped final
+     * response: a flat queue error surfaces the queue's own error text, anything
+     * else (only queued/status events) is reported as a transport failure.
+     */
+    private describeMissingFinalResponse(lastEvent: SkipStreamMessage): string {
+        if (lastEvent.responsePhase === 'error') {
+            const queueError = lastEvent.error || lastEvent.message;
+            return queueError
+                ? `Skip request failed in the processing queue: ${queueError}`
+                : 'Skip request failed in the processing queue';
+        }
+        return 'The Skip API stream ended before a final response was received. Please try again.';
     }
 
     /**
@@ -543,8 +600,7 @@ export class SkipSDK {
         let callingServerURL: string | undefined;
         let callingServerAPIKey: string | undefined;
         if (includeCallbackAuth) {
-            const skipConfig = getSkipConfig();
-            callingServerURL = skipConfig.publicUrl || `${skipConfig.baseUrl}:${skipConfig.graphqlPort}${skipConfig.graphqlRootPath}`;
+            callingServerURL = await this.resolveCallbackServerURL();
 
             // Auto-provisioned scoped API key. Returns the raw key ONLY when
             // a new key was just created (first time connecting to this Skip host).
@@ -573,6 +629,33 @@ export class SkipSDK {
     }
 
     /**
+     * Resolves the URL Skip uses to call back into this MJAPI. MJServer's
+     * `configInfo` already encodes the mj.config.cjs > env > defaults precedence,
+     * so its values win over the env-only getSkipConfig() ones. The import is
+     * lazy: unit tests and non-MJAPI contexts cannot load that heavy module, and
+     * for them the env-derived values remain authoritative.
+     */
+    private async resolveCallbackServerURL(): Promise<string> {
+        const skipConfig = getSkipConfig();
+        let { baseUrl, publicUrl, graphqlPort, graphqlRootPath } = skipConfig;
+        try {
+            const { configInfo } = await import('@memberjunction/server');
+            baseUrl = configInfo.baseUrl || baseUrl;
+            publicUrl = configInfo.publicUrl || publicUrl;
+            graphqlPort = configInfo.graphqlPort ?? graphqlPort;
+            graphqlRootPath = configInfo.graphqlRootPath || graphqlRootPath;
+        } catch {
+            // Not running inside MJAPI — fall back to getSkipConfig() env values.
+        }
+        const url = publicUrl || `${baseUrl}:${graphqlPort}${graphqlRootPath}`;
+        if (!SkipSDK.__callbackURLLogged) {
+            SkipSDK.__callbackURLLogged = true;
+            LogStatus(`[SkipSDK] Resolved Skip callback URL: ${url}`);
+        }
+        return url;
+    }
+
+    /**
      * Build entity metadata for Skip
      * Copied from AskSkipResolver.BuildSkipEntities - uses cached metadata with refresh logic
      */
@@ -583,9 +666,19 @@ export class SkipSDK {
 
             // If force refresh is requested OR cache expired OR cache is empty, refresh
             if (forceRefresh || cacheExpired || SkipSDK.__skipEntitiesCache$.value === null) {
-                LogStatus(`[SkipSDK] Refreshing Skip entities cache (force: ${forceRefresh}, expired: ${cacheExpired})`);
-                const newData = this.refreshSkipEntities();
-                SkipSDK.__skipEntitiesCache$.next(newData);
+                if (SkipSDK.__refreshInFlight) {
+                    // A refresh is already running — piggyback on it rather than
+                    // launching another full per-field distinct-value sweep.
+                    LogStatus('[SkipSDK] Skip entities refresh already in flight — awaiting it');
+                }
+                else {
+                    LogStatus(`[SkipSDK] Refreshing Skip entities cache (force: ${forceRefresh}, expired: ${cacheExpired})`);
+                    const newData = this.refreshSkipEntities().finally(() => {
+                        SkipSDK.__refreshInFlight = null;
+                    });
+                    SkipSDK.__refreshInFlight = newData;
+                    SkipSDK.__skipEntitiesCache$.next(newData);
+                }
             }
 
             return SkipSDK.__skipEntitiesCache$.pipe(take(1)).toPromise();
@@ -835,6 +928,10 @@ export class SkipSDK {
         alreadyLoaded: Map<string, { artifact: any; artifactType: SkipAPIArtifactType; versions: SkipAPIArtifactVersion[] }>
     ): Promise<SkipAPIArtifact[]> {
         try {
+            // Caller-supplied value interpolated into an ExtraFilter — reject anything
+            // that is not a canonical UUID before it can carry an injection payload.
+            requireValidUUID(conversationId, 'conversationId');
+
             const rv = new RunView();
             // Pull conversation detail IDs in this conversation
             const detailsResult = await rv.RunView<MJConversationDetailEntity>({
@@ -844,7 +941,7 @@ export class SkipSDK {
                 ResultType: 'simple',
             }, contextUser);
             const detailIds = detailsResult.Success && detailsResult.Results
-                ? (detailsResult.Results as { ID: string }[]).map(r => r.ID)
+                ? (detailsResult.Results as { ID: string }[]).map(r => r.ID).filter(isValidUUID)
                 : [];
             if (detailIds.length === 0) return [];
 
@@ -860,8 +957,10 @@ export class SkipSDK {
                 : [];
             if (junctions.length === 0) return [];
 
-            // Load each ArtifactVersion + its parent Artifact + ArtifactType
-            const versionIds = [...new Set(junctions.map(j => j.ArtifactVersionID))];
+            // Load each ArtifactVersion + its parent Artifact + ArtifactType.
+            // These IDs were read back from the DB, but they still land in
+            // ExtraFilter strings — filter to canonical UUIDs as defense in depth.
+            const versionIds = [...new Set(junctions.map(j => j.ArtifactVersionID))].filter(isValidUUID);
             const versionsResult = await rv.RunView({
                 EntityName: 'MJ: Artifact Versions',
                 ExtraFilter: `ID IN ('${versionIds.join("','")}')`,
@@ -872,7 +971,7 @@ export class SkipSDK {
                 : [];
             if (versions.length === 0) return [];
 
-            const artifactIds = [...new Set(versions.map(v => v.ArtifactID as string))];
+            const artifactIds = [...new Set(versions.map(v => v.ArtifactID as string))].filter(isValidUUID);
             const artifactsResult = await rv.RunView({
                 EntityName: 'MJ: Artifacts',
                 ExtraFilter: `ID IN ('${artifactIds.join("','")}')`,
@@ -882,7 +981,7 @@ export class SkipSDK {
                 ? (artifactsResult.Results as Record<string, any>[])
                 : [];
 
-            const typeIds = [...new Set(artifactRows.map(a => a.TypeID as string))];
+            const typeIds = [...new Set(artifactRows.map(a => a.TypeID as string))].filter(isValidUUID);
             const typesResult = await rv.RunView({
                 EntityName: 'MJ: Artifact Types',
                 ExtraFilter: `ID IN ('${typeIds.join("','")}')`,
@@ -1036,7 +1135,14 @@ export class SkipSDK {
                 const requestFn = parsedUrl.protocol === 'https:' ? httpsRequest : httpRequest;
                 const events: SkipStreamMessage[] = [];
                 let buffer = '';
-                let streamEnded = false;
+                let settled = false;
+                let endFired = false;
+
+                const settleReject = (error: Error): void => {
+                    if (settled) return;
+                    settled = true;
+                    reject(error);
+                };
 
                 const parseSSELine = (line: string): void => {
                     if (line.trim() === '') return;           // Skip empty lines (SSE event delimiters)
@@ -1054,8 +1160,8 @@ export class SkipSDK {
                 };
 
                 const handleStreamEnd = (): void => {
-                    if (streamEnded) return;
-                    streamEnded = true;
+                    if (settled) return;
+                    settled = true;
                     // Try to parse any remaining data in buffer
                     if (buffer.trim()) {
                         parseSSELine(buffer);
@@ -1092,8 +1198,22 @@ export class SkipSDK {
                         return;
                     }
 
-                    const gunzip = createGunzip();
-                    const stream = res.headers['content-encoding'] === 'gzip' ? res.pipe(gunzip) : res;
+                    const isGzip = res.headers['content-encoding'] === 'gzip';
+                    const stream = isGzip ? res.pipe(createGunzip()) : res;
+
+                    if (isGzip) {
+                        // pipe() does not forward source errors to the gunzip stream,
+                        // so a mid-stream connection reset on `res` would otherwise
+                        // never settle this promise. Listen on the source directly.
+                        res.on('error', (e: Error) => {
+                            LogError(`[SkipSDK] SSE response error for ${url}: ${e.message}`);
+                            settleReject(new Error(`SSE stream error: ${e.message}`));
+                        });
+                        res.on('aborted', () => {
+                            LogError(`[SkipSDK] SSE response aborted for ${url}`);
+                            settleReject(new Error('SSE stream aborted before completion'));
+                        });
+                    }
 
                     stream.on('data', (chunk: Buffer) => {
                         buffer += chunk.toString();
@@ -1105,26 +1225,30 @@ export class SkipSDK {
                         }
                     });
 
-                    stream.on('end', handleStreamEnd);
+                    stream.on('end', () => {
+                        endFired = true;
+                        handleStreamEnd();
+                    });
 
                     stream.on('close', () => {
-                        if (!streamEnded) {
+                        // `close` without a preceding `end` means the connection was
+                        // torn down mid-stream — a transport failure, not a normal
+                        // end with whatever partial events happened to arrive.
+                        if (!endFired && !settled) {
                             LogError(`[SkipSDK] SSE stream closed prematurely for ${url}`);
-                            handleStreamEnd();
+                            settleReject(new Error('SSE stream closed before completion'));
                         }
                     });
 
                     stream.on('error', (e: Error) => {
-                        if (!streamEnded) {
-                            LogError(`[SkipSDK] SSE stream error for ${url}: ${e.message}`);
-                            reject(new Error(`SSE stream error: ${e.message}`));
-                        }
+                        LogError(`[SkipSDK] SSE stream error for ${url}: ${e.message}`);
+                        settleReject(new Error(`SSE stream error: ${e.message}`));
                     });
                 });
 
                 req.on('error', (e: Error) => {
                     LogError(`[SkipSDK] SSE request error for ${url}: ${e.message}`);
-                    reject(new Error(`HTTP request failed to ${url}: ${e.message}`));
+                    settleReject(new Error(`HTTP request failed to ${url}: ${e.message}`));
                 });
 
                 req.write(compressed);
@@ -1177,8 +1301,15 @@ export class SkipSDK {
                 LogError(`[SkipSDK.refreshSkipEntities] WARNING: No entities passed filtering! This will result in empty Skip entities list.`);
             }
 
-            // Build enriched EntityInfo objects with filtered fields and packed values
-            const result = await Promise.all(entities.map((e) => this.buildEntityForSkip(e)));
+            // Build enriched EntityInfo objects with filtered fields and packed values.
+            // buildEntityForSkip returns null on failure — those must not reach the
+            // cached payload, where they would serialize as literal nulls for Skip.
+            const built = await Promise.all(entities.map((e) => this.buildEntityForSkip(e)));
+            const result = built.filter((entity): entity is EntityInfo => entity !== null);
+            const droppedNames = entities.filter((_, i) => built[i] === null).map((e) => e.Name);
+            if (droppedNames.length > 0) {
+                LogError(`[SkipSDK.refreshSkipEntities] Dropped ${droppedNames.length} entities that failed to build: ${droppedNames.join(', ')}`);
+            }
 
             LogStatus(`[SkipSDK.refreshSkipEntities] Successfully packed ${result.length} entities for Skip`);
 
@@ -1196,7 +1327,7 @@ export class SkipSDK {
      * enriching field values from the database. Returns a new EntityInfo
      * constructed from a plain object so it serializes cleanly via toJSON().
      */
-    private async buildEntityForSkip(e: EntityInfo): Promise<EntityInfo> {
+    private async buildEntityForSkip(e: EntityInfo): Promise<EntityInfo | null> {
         try {
             // Filter fields by scope (only include fields visible to AI)
             const filteredFields = e.Fields.filter(f => {
@@ -1249,14 +1380,12 @@ export class SkipSDK {
                     return f.EntityFieldValues.map((v) => new EntityFieldValueInfo({ Value: v.Value, Code: v.Value }));
                 }
                 else if (f.ValueListTypeEnum === 'ListOrUserEntry') {
+                    const fromEntityFieldValues = f.EntityFieldValues.map((v) => new EntityFieldValueInfo({ Value: v.Value, Code: v.Value }));
                     const values = await this.getFieldDistinctValues(f);
                     if (!values || values.length === 0) {
-                        return f.EntityFieldValues.map((v) => new EntityFieldValueInfo({ Value: v.Value, Code: v.Value }));
+                        return fromEntityFieldValues;
                     }
-                    else {
-                        const fromEntityFieldValues = f.EntityFieldValues.map((v) => new EntityFieldValueInfo({ Value: v.Value, Code: v.Value }));
-                        return [...new Set([...fromEntityFieldValues, ...values])];
-                    }
+                    return this.dedupeFieldValues([...fromEntityFieldValues, ...values]);
                 }
             }
             return [];
@@ -1265,6 +1394,24 @@ export class SkipSDK {
             LogError(`[SkipSDK] packFieldValues error: ${e}`);
             return [];
         }
+    }
+
+    /**
+     * Dedupes field values by their Value string. Each entry is a freshly
+     * constructed object, so identity-based dedup (`new Set([...])`) never
+     * collapses anything — the value text is the real identity key. The first
+     * occurrence wins, so declared entity field values take precedence over
+     * database-derived duplicates.
+     */
+    private dedupeFieldValues(values: EntityFieldValueInfo[]): EntityFieldValueInfo[] {
+        const byValue = new Map<string, EntityFieldValueInfo>();
+        for (const v of values) {
+            const key = String(v.Value);
+            if (!byValue.has(key)) {
+                byValue.set(key, v);
+            }
+        }
+        return [...byValue.values()];
     }
 
     /**
@@ -1362,6 +1509,10 @@ export class SkipSDK {
                 this.Provider = options.provider;
             }
 
+            // Resolve the Skip API key from the credential store when ASK_SKIP_API_KEY
+            // is unset — same path chat() takes, otherwise x-api-key is sent empty.
+            await this.ensureConfig(options.contextUser);
+
             const baseRequest = await this.buildBaseRequest(
                 options.contextUser,
                 options.dataSource,
@@ -1422,6 +1573,10 @@ export class SkipSDK {
             if (options.provider) {
                 this.Provider = options.provider;
             }
+
+            // Resolve the Skip API key from the credential store when ASK_SKIP_API_KEY
+            // is unset — same path chat() takes, otherwise x-api-key is sent empty.
+            await this.ensureConfig(options.contextUser);
 
             const evalRequest = {
                 promptName: options.promptName,

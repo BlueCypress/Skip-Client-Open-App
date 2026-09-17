@@ -17,8 +17,9 @@ vi.mock('@memberjunction/ai-agents', () => ({
     BaseAgent: class MockBaseAgent {},
 }));
 
-vi.mock('@memberjunction/global', () => ({
+vi.mock('@memberjunction/global', async (importOriginal) => ({
     RegisterClass: () => (target: unknown) => target,
+    IsValidUUID: (await importOriginal<typeof import('@memberjunction/global')>()).IsValidUUID,
 }));
 
 vi.mock('@memberjunction/core', () => ({

@@ -76,6 +76,12 @@ const REQUIRED_SCOPES: RequiredScope[] = [
     { path: 'entity:delete', resourcePattern: 'MJ: Quer*' },
 ];
 
+/**
+ * Flat list of the scope FullPaths in {@link REQUIRED_SCOPES}. Exported for
+ * `skip-middleware.ts`'s boot-time diagnostic so the two lists cannot drift.
+ */
+export const REQUIRED_SCOPE_PATHS: readonly string[] = REQUIRED_SCOPES.map(s => s.path);
+
 /** Promise-based mutex: if provisioning is in-flight, subsequent callers await it. */
 let provisioningPromise: Promise<string | null> | null = null;
 
@@ -106,10 +112,13 @@ let deliveryConfirmed = false;
 
 /**
  * Builds the label for a Skip callback key scoped to a specific Skip host.
- * Example: "Skip Callback: https://skip.example.com"
+ * Trailing slashes are stripped so deployments that differ only by a trailing
+ * slash on ASK_SKIP_URL resolve to the same key row instead of provisioning
+ * a duplicate key. Example: "Skip Callback: https://skip.example.com"
  */
 function buildKeyLabel(): string {
-    return `Skip Callback: ${getSkipConfig().skipURL}`;
+    const skipURL = (getSkipConfig().skipURL ?? '').replace(/\/+$/, '');
+    return `Skip Callback: ${skipURL}`;
 }
 
 /**
@@ -208,13 +217,27 @@ async function deleteExistingCallbackKey(reason: string): Promise<void> {
             return;
         }
 
+        await deleteKeyByID(existingKey.ID, systemUser, reason);
+    } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        LogError(`[SkipCallbackKeyProvisioner] Error deleting callback key (${reason}): ${msg}`);
+    }
+}
+
+/**
+ * Deletes an API key row by ID via the entity framework. Child rows (scopes,
+ * usage logs) are cleaned up by cascading FKs. Never throws — a stale row is
+ * recoverable on a later pass while a thrown error is not.
+ */
+async function deleteKeyByID(apiKeyID: string, contextUser: UserInfo, reason: string): Promise<void> {
+    try {
         const md = new Metadata();
-        const keyEntity = await md.GetEntityObject<MJAPIKeyEntity>('MJ: API Keys', systemUser);
-        const loaded = await keyEntity.Load(existingKey.ID);
+        const keyEntity = await md.GetEntityObject<MJAPIKeyEntity>('MJ: API Keys', contextUser);
+        const loaded = await keyEntity.Load(apiKeyID);
         if (loaded && await keyEntity.Delete()) {
-            LogStatus(`[SkipCallbackKeyProvisioner] Deleted callback key (ID: ${existingKey.ID}) — ${reason}`);
+            LogStatus(`[SkipCallbackKeyProvisioner] Deleted callback key (ID: ${apiKeyID}) — ${reason}`);
         } else {
-            LogError(`[SkipCallbackKeyProvisioner] Failed to delete callback key (ID: ${existingKey.ID}) — ${reason}`);
+            LogError(`[SkipCallbackKeyProvisioner] Failed to delete callback key (ID: ${apiKeyID}) — ${reason}`);
         }
     } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
@@ -233,9 +256,12 @@ async function deleteExistingCallbackKey(reason: string): Promise<void> {
  * Returns null on provisioning failure — caller should fall back to legacy MJ_API_KEY.
  */
 export async function getSkipCallbackKey(): Promise<string | null> {
-    // Fast path: we've already checked this lifetime
+    // Fast path: we've already checked this lifetime. Once Skip has confirmed
+    // receipt the raw key must never be re-sent; until then, concurrent
+    // requests piggybacking on a just-created key keep carrying it so at
+    // least one delivery attempt lands.
     if (provisioningComplete) {
-        return createdRawKey;
+        return deliveryConfirmed ? null : createdRawKey;
     }
 
     // Mutex: if provisioning is in-flight, piggyback on that promise
@@ -350,8 +376,16 @@ async function createKeyWithScopes(serviceAccount: UserInfo, label: string, syst
 
     const scopesAssigned = await assignScopes(createResult.APIKeyId, systemUser, engine);
     if (!scopesAssigned) {
-        LogError('[SkipCallbackKeyProvisioner] Key created but scope assignment failed. ' +
-            `Key ID: ${createResult.APIKeyId}. Manual scope assignment may be needed.`);
+        // A key with missing or partial scopes is worse than no key: MJ denies
+        // by default, so Skip would persist a permanently useless credential —
+        // scope denial is not `invalid_callback_key`, so nothing self-heals,
+        // and restarts find the row and never re-provision. Delete the key
+        // (cascading FKs remove any partially-saved scope rows) and return
+        // null so the SDK falls back to the legacy MJ_API_KEY path.
+        LogError('[SkipCallbackKeyProvisioner] Key created but scope assignment failed — ' +
+            `deleting unusable key (ID: ${createResult.APIKeyId}) and falling back to legacy MJ_API_KEY.`);
+        await deleteKeyByID(createResult.APIKeyId, systemUser, 'scope assignment failed');
+        return null;
     }
 
     return createResult.RawKey;
