@@ -25,6 +25,7 @@ import {
     SkipErrorCode,
     SkipRetryAction,
     SkipErrorDetail,
+    SkipFormContext,
 } from '@askskip/types';
 import { isValidUUID, requireValidUUID } from './uuid-guard.js';
 import { DataContext } from '@memberjunction/data-context';
@@ -99,6 +100,13 @@ export interface SkipCallOptions {
      * Context user for permissions and metadata
      */
     contextUser: UserInfo;
+
+    /**
+     * Composition of the MJ entity form the caller is viewing, when there is one.
+     * Forwarded verbatim to Skip so an agent asked to build a panel knows what the
+     * form already shows.
+     */
+    formContext?: SkipFormContext;
 
     /**
      * Database connection for metadata queries
@@ -568,7 +576,8 @@ export class SkipSDK {
             callingServerURL: baseRequest.callingServerURL,
             callingServerAPIKey: baseRequest.callingServerAPIKey,
             externalReferenceID,
-            databasePlatform: baseRequest.databasePlatform
+            databasePlatform: baseRequest.databasePlatform,
+            formContext: options.formContext
         };
 
         return request;
