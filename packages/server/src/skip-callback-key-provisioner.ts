@@ -131,13 +131,58 @@ function buildKeyLabel(): string {
  * framework — all child rows (scopes, usage logs) are cleaned up by cascading
  * FKs in the database, so no orphaned data is left behind.
  */
-export async function resetCallbackKeyProvisioning(): Promise<void> {
-    await deleteExistingCallbackKey('re-provisioning');
+export async function resetCallbackKeyProvisioning(): Promise<CallbackKeyResetResult> {
+    const before = getCallbackKeyProvisioningState();
+    const keyDeleted = await deleteExistingCallbackKey('re-provisioning');
 
     // Reset in-memory state so provisionInner() runs fresh
     provisioningComplete = false;
     createdRawKey = null;
     deliveryConfirmed = false;
+
+    return { keyDeleted, before, after: getCallbackKeyProvisioningState() };
+}
+
+/**
+ * The provisioner's in-memory view of the callback key, without the key itself.
+ *
+ * Exposed because a reset that cannot be observed cannot be trusted. Recovering the
+ * wedge that motivated this work meant an operator editing `MJAPIKey.Status` in the
+ * tenant database and restarting MJAPI, and the only reason a restart was mandatory is
+ * that nothing could read — or change — this state from outside the request path. A
+ * caller can now take this reading, call {@link resetCallbackKeyProvisioning}, and see
+ * that it landed, in the same process.
+ *
+ * `hasUndeliveredRawKey` deliberately reports only that a raw key is pending, never its
+ * value: this is meant to be reachable from an admin surface, and the raw key is a
+ * credential that exists in memory for exactly one delivery.
+ */
+export interface SkipCallbackKeyProvisioningState {
+    /** Provisioning ran to completion this lifetime — a key exists (or was just made). */
+    provisioningComplete: boolean;
+    /** A freshly minted key is still waiting to be carried to Skip. Never the key value. */
+    hasUndeliveredRawKey: boolean;
+    /** Skip is known to hold the current key. Blocks {@link discardUnconfirmedCallbackKey}. */
+    deliveryConfirmed: boolean;
+}
+
+/** What {@link resetCallbackKeyProvisioning} did, so a caller can report it rather than guess. */
+export interface CallbackKeyResetResult {
+    /** True when an existing key row was found and deleted. False when there was none to delete. */
+    keyDeleted: boolean;
+    /** State as it was before the reset. */
+    before: SkipCallbackKeyProvisioningState;
+    /** State after the reset — always fully cleared. */
+    after: SkipCallbackKeyProvisioningState;
+}
+
+/** Snapshot of {@link SkipCallbackKeyProvisioningState}. See that interface for why. */
+export function getCallbackKeyProvisioningState(): SkipCallbackKeyProvisioningState {
+    return {
+        provisioningComplete,
+        hasUndeliveredRawKey: createdRawKey !== null && !deliveryConfirmed,
+        deliveryConfirmed,
+    };
 }
 
 /**
@@ -197,30 +242,32 @@ export async function discardUnconfirmedCallbackKey(): Promise<boolean> {
  * stale row is recoverable on the next pass while a thrown error is not.
  *
  * @param reason - Included in log output to distinguish rotation from discard.
+ * @returns true when a key row was found and deleted.
  */
-async function deleteExistingCallbackKey(reason: string): Promise<void> {
+async function deleteExistingCallbackKey(reason: string): Promise<boolean> {
     try {
         const systemUser = UserCache.Instance.GetSystemUser();
         if (!systemUser) {
-            return;
+            return false;
         }
 
         const serviceAccount = UserCache.Instance.Users.find(
             u => u.Email.toLowerCase() === SKIP_SERVICE_EMAIL
         );
         if (!serviceAccount) {
-            return;
+            return false;
         }
 
         const existingKey = await findExistingKey(serviceAccount.ID, buildKeyLabel(), systemUser);
         if (!existingKey) {
-            return;
+            return false;
         }
 
-        await deleteKeyByID(existingKey.ID, systemUser, reason);
+        return await deleteKeyByID(existingKey.ID, systemUser, reason);
     } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
         LogError(`[SkipCallbackKeyProvisioner] Error deleting callback key (${reason}): ${msg}`);
+        return false;
     }
 }
 
@@ -228,20 +275,24 @@ async function deleteExistingCallbackKey(reason: string): Promise<void> {
  * Deletes an API key row by ID via the entity framework. Child rows (scopes,
  * usage logs) are cleaned up by cascading FKs. Never throws — a stale row is
  * recoverable on a later pass while a thrown error is not.
+ *
+ * @returns true when the row was deleted.
  */
-async function deleteKeyByID(apiKeyID: string, contextUser: UserInfo, reason: string): Promise<void> {
+async function deleteKeyByID(apiKeyID: string, contextUser: UserInfo, reason: string): Promise<boolean> {
     try {
         const md = new Metadata();
         const keyEntity = await md.GetEntityObject<MJAPIKeyEntity>('MJ: API Keys', contextUser);
         const loaded = await keyEntity.Load(apiKeyID);
         if (loaded && await keyEntity.Delete()) {
             LogStatus(`[SkipCallbackKeyProvisioner] Deleted callback key (ID: ${apiKeyID}) — ${reason}`);
-        } else {
-            LogError(`[SkipCallbackKeyProvisioner] Failed to delete callback key (ID: ${apiKeyID}) — ${reason}`);
+            return true;
         }
+        LogError(`[SkipCallbackKeyProvisioner] Failed to delete callback key (ID: ${apiKeyID}) — ${reason}`);
+        return false;
     } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
         LogError(`[SkipCallbackKeyProvisioner] Error deleting callback key (${reason}): ${msg}`);
+        return false;
     }
 }
 

@@ -121,7 +121,17 @@ export interface SkipClientConfig {
     /** Skip API base URL (e.g. `https://brain-prod.askskip.ai`). Endpoints like `/chat` are derived from this. */
     skipURL?: string;
     apiKey?: string;
+    /**
+     * `GRAPHQL_BASE_URL` — scheme and host of this instance, with no port. Undefined when
+     * unset: there is no safe default, because this value can end up in the address Skip's
+     * cloud is asked to dial. See `resolveSkipCallbackURL()` in `@askskip/server`.
+     */
     baseUrl?: string;
+    /**
+     * `MJAPI_PUBLIC_URL` — the complete, externally reachable callback address. The only
+     * input that is honoured verbatim, including a loopback value, because setting it is an
+     * explicit statement about where Skip should call back rather than an inherited default.
+     */
     publicUrl?: string;
     graphqlPort?: number;
     graphqlRootPath?: string;
@@ -252,11 +262,14 @@ export function getSkipConfig(): SkipClientConfig {
     return {
         skipURL: process.env.ASK_SKIP_URL ?? DEFAULT_SKIP_BASE_URL,
         apiKey: process.env.ASK_SKIP_API_KEY,
-        // Defaults mirror MJServer's config.ts (baseUrl/publicUrl/graphqlPort/graphqlRootPath)
-        // so the callback URL `${baseUrl}:${graphqlPort}${graphqlRootPath}` is well-formed even
-        // when the env vars are unset (otherwise graphqlRootPath -> "undefined" in the URL).
-        baseUrl: process.env.GRAPHQL_BASE_URL ?? 'http://localhost',
-        publicUrl: process.env.MJAPI_PUBLIC_URL, // empty/undefined -> SDK falls back to baseUrl:port+rootPath
+        // `baseUrl` is deliberately NOT defaulted to 'http://localhost'. MJServer's config.ts
+        // carries that default and is right to: every URL it feeds is dialled by this process.
+        // This one is dialled by Skip's cloud, so a loopback value names Skip's own container.
+        // Supplying it here made an unconfigured instance look configured, and Skip's
+        // "unable to reach your server" reply sent operators to check their API key.
+        // Leaving it undefined lets resolveSkipCallbackURL() refuse with the real reason.
+        baseUrl: process.env.GRAPHQL_BASE_URL,
+        publicUrl: process.env.MJAPI_PUBLIC_URL, // the explicit callback address; wins outright
         graphqlPort: process.env.GRAPHQL_PORT ? parseInt(process.env.GRAPHQL_PORT, 10) : 4000,
         graphqlRootPath: process.env.GRAPHQL_ROOT_PATH ?? '/',
         entitiesToSend: resolveEntitiesToSend(fileCfg),

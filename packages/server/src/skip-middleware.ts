@@ -23,6 +23,7 @@ import { UserCache } from '@memberjunction/sqlserver-dataprovider';
 import { ensureSkipRecords, getSkipConfig, DEFAULT_SKIP_BASE_URL, getSkipRegistryURI, resolveSkipApiKey } from '@askskip/core';
 import { SkipSDK } from './skip-sdk.js';
 import { APP_OWNED_SCOPE_PATHS, REQUIRED_SCOPE_PATHS } from './skip-callback-key-provisioner.js';
+import { describeCallbackURL, resolveSkipCallbackURL } from './skip-callback-url.js';
 
 // Side-effect import: ensure SkipProxyAgent's @RegisterClass(BaseAgent, 'SkipProxyAgent') runs.
 import './skip-agent.js';
@@ -227,15 +228,33 @@ export class SkipMiddleware extends BaseServerMiddleware {
     }
 
     /**
-     * Reports the callback URL the SDK will advertise to Skip as `callingServerURL`
-     * (same derivation as skip-sdk's buildBaseRequest), so a misconfigured value —
-     * e.g. `http://localhost:4000/` on a deployed instance — is visible in boot logs.
+     * Reports the callback URL the SDK will advertise to Skip as `callingServerURL`, using the
+     * same resolver the SDK does so the boot log cannot disagree with the request path.
+     *
+     * This site used to print `http://localhost:4000/` as though it were a configured value,
+     * with a trailing hint, and a deployed instance shipped it that way to two tenants. It now
+     * reports a resolvable address as a status line and an unresolvable one as an error naming
+     * the missing variable — because every Skip request on this instance will fail until it is
+     * set, and the failure Skip reports blames the wrong thing.
+     *
+     * Still does not abort boot: everything else this app does works, the error is actionable
+     * without a stack trace, and an instance that refuses to start is a worse outcome than one
+     * whose Skip requests refuse with a specific reason.
      */
     private logAdvertisedCallbackURL(): void {
         const config = getSkipConfig();
-        const callbackURL = config.publicUrl || `${config.baseUrl}:${config.graphqlPort}${config.graphqlRootPath}`;
-        LogStatus(`[skip-client] Callback URL advertised to Skip (callingServerURL): ${callbackURL}. ` +
-            'Set MJAPI_PUBLIC_URL (or GRAPHQL_BASE_URL/GRAPHQL_PORT/GRAPHQL_ROOT_PATH) if Skip cannot reach this address.');
+        const resolution = resolveSkipCallbackURL({
+            publicUrl: config.publicUrl,
+            baseUrl: config.baseUrl,
+            graphqlPort: config.graphqlPort,
+            graphqlRootPath: config.graphqlRootPath,
+        });
+        const line = `[skip-client] ${describeCallbackURL(resolution)}`;
+        if (resolution.ok) {
+            LogStatus(line);
+        } else {
+            LogError(`${line} Skip requests will be refused with this message until it is resolved.`);
+        }
     }
 
     /**
