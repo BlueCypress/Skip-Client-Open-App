@@ -1,5 +1,51 @@
 # @askskip/server
 
+## 0.3.2
+
+### Patch Changes
+
+- 9a56d6e: Support per-environment Skip component registries, so components built against a non-production brain keep resolving to that brain.
+
+  A component spec stores the _name_ of the registry it came from, and MJ resolves that name to a URI at render time (`ComponentRegistryResolver.getRegistryByName` matches on `Name`). Every brain previously published under the single name `Skip`, and the client's one `Skip` registry record had its URI rewritten on each boot to follow `ASK_SKIP_URL`. The name therefore denoted "whatever brain this client currently points at" rather than a specific server, so flipping `ASK_SKIP_URL` back to production silently invalidated every component generated against stage or a local brain — they resolved to production and 404'd.
+
+  The brain now reports which registry name it publishes under via `GET /registry/api/v1/registry`, and the SDK reads it rather than deriving it. Deriving client-side would be guessing: a URL is not an identity, and independent derivation on both sides lets them disagree silently, producing `Registry not found: <name>` with no obvious cause. An unreachable brain, or one predating this field, yields the production default — the previous behavior.
+
+  - `fetchSkipRegistryName()` asks the brain for its registry name, returning `null` on any failure so callers leave existing records alone rather than creating a wrongly-named one.
+  - `REGISTRY_URI_OVERRIDE_<NAME>` and `REGISTRY_API_KEY_<NAME>` are now derived from the registry name via `deriveRegistryEnvVarSuffix()`, mirroring MJ's own derivation (uppercase, non-alphanumerics to `_`). Previously both were hardcoded to the production spelling, which MJ would never read on a non-production instance. Note that names must stay distinct _after_ this transformation — `Skip-Stage` and `Skip_Stage` both derive to `SKIP_STAGE`.
+  - `DEFAULT_SKIP_REGISTRY_NAME` moves to `@askskip/types` (re-exported from `@askskip/core`, so importers are unaffected). The Skip brain repository already depends on that package and falls back to the same default independently — the brain when `SKIP_REGISTRY_NAME` is unset, the SDK when the brain reports no name. Two literals could drift, and they would only disagree visibly as `Registry not found` at render time. Nothing else about registry naming is shared: the `SKIP_REGISTRY_NAME` variable is read by the brain alone, and the env-var derivation is used by the SDK alone, so both stay where they are used.
+  - `deriveSkipRegistryID()` gives each registry name a deterministic record ID, so setup is idempotent and a future promotion has a known target to repoint `__mj.Component.SourceRegistryID` at. Production resolves to the legacy pinned GUID (`B2F8C247-…`) — the same one MJ core seeded and still tombstones — so existing installs are untouched.
+  - `ensureSkipComponentRegistry()` now looks up by exact name without capping at one row, and reports rather than repairs two shapes it cannot safely fix: duplicate names, and a record whose ID is not the expected one. `ComponentRegistry.Name` has no unique constraint at either the SQL or entity-metadata layer, and MJ's resolver picks the first `.find()` match, so duplicates resolve arbitrarily. A record's primary key is not rewritten because `FK_Component_SourceRegistry` references it.
+  - The uninstall filter now covers the whole `Skip-*` family, so uninstalling from a stage- or local-pointed instance does not strand its registry record.
+
+  - The production `Skip` registry record now self-heals. Once each environment publishes under its own name, `Skip` means production and nothing else, so its URI should always be the production one. Instances upgraded from the single-registry era will not have that: their `Skip` row was rewritten on every boot to follow `ASK_SKIP_URL`, so any client ever pointed at stage or a laptop still has that host stored, and name-scoped lookup means nothing revisits it. `healProductionRegistryIfUnused()` restores it on every boot where this instance publishes under a different name — the first boot after upgrading repairs the row, every later boot is a no-op. An explicit `REGISTRY_URI_OVERRIDE_SKIP` is always respected, and an instance genuinely using `Skip` is left to the normal resolution order.
+  - Registry reconciliation is now driven by use rather than by startup alone. The registry name belongs to the brain, so the client must ask for it — and asking only at boot is not enough in practice: MJAPI and the Skip API are routinely started hours apart locally, and a brain can be down for a maintenance window. A retry with any fixed cap fails both, since the cap either expires before the brain returns or polls a dead host for the life of the process. Instead, every successful `SkipSDK.chat()` call — proof the brain is up _right now_ — triggers a fire-and-forget reconcile if startup did not already succeed, and re-checks the reported name at most every 5 minutes so a rename while the client is running is picked up without a restart. A client that never uses Skip never makes a call. Ordering works out on its own: a chat request does not need the registry record, and a component must be generated before it can be rendered.
+  - The registry API key is now stored as a `Component Registry: <Name>` credential. MJ resolves a registry's key as `REGISTRY_API_KEY_<ID>` → `REGISTRY_API_KEY_<NAME>` → `mj.config.cjs` → credential store; the first two are process environment, set only when the client reached the brain at startup. Since every Skip registry route requires authentication, that made _rendering_ depend on boot order — a client started before the Skip API would 401 on every component fetch for the rest of the process, even after the brain came up. The credential is read at fetch time and survives restarts, removing the dependency. It reconciles rather than creates-once, so a corrected `ASK_SKIP_API_KEY` is not shadowed by a stale stored value; environment still outranks it at resolution time.
+  - `SKIP_REGISTRY_NAME` set in the _client's_ environment is now reported. It configures the brain, and the client never reads it, so setting it here was previously a silent no-op that reads as the feature being broken.
+  - Skip registry records this instance is not using are reported at boot and never deleted. A mistyped or since-corrected registry name leaves a record behind, and components generated while it was configured are stamped with that name permanently — they resolve only for as long as the record exists, so removing it silently breaks them.
+  - An unreachable brain no longer causes registry changes. `resolveRegistryName()` now returns `null` for "unknown" instead of collapsing to the production default, and the client then derives no `REGISTRY_*` variables and touches no registry records for that boot. Previously a brain that was merely slow to start would make a client pointed at a local brain manage the _production_ `Skip` record and rewrite its URI to `localhost` — the exact drift this release exists to eliminate, reachable through an ordinary transient outage.
+
+  No migration ships with this change and none is needed: the production GUID is already canonical in every install, and the per-environment registries do not exist yet, so they are created correctly from the start.
+
+  Production behavior is unchanged end to end — an unset registry name resolves to `Skip`, the legacy GUID, and the existing env var spellings.
+
+- 9ac7382: Declare `express`, `type-graphql` and `graphql-type-json` in `@askskip/server`.
+
+  The package imported all three without declaring any of them. npm's flat `node_modules` hid
+  that — the host's copies were visible to us by accident — but pnpm gives a package only what it
+  declares, so `tsc` failed with TS2307 on all three and the package could not build as a member
+  of a pnpm workspace (how MJ 6.x and `mj dev workspace` install it).
+
+  They are declared as `peerDependencies`, alongside the `@memberjunction/*` entries, because they
+  must be the MJ host's own copies: the Router we mount belongs to the host's express app, our
+  resolver's decorators must write into the type-graphql metadata storage the host's schema is
+  built from, and `GraphQLJSONObject` must come from the host's graphql realm. `@types/express`
+  is added as a devDependency for the type-only import. No new package enters the dependency tree.
+
+- Updated dependencies [9a56d6e]
+- Updated dependencies [9ac7382]
+  - @askskip/types@0.3.2
+  - @askskip/core@0.3.2
+
 ## 0.3.1
 
 ### Patch Changes
