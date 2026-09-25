@@ -27,6 +27,7 @@ import {
     SkipErrorDetail,
 } from '@askskip/types';
 import { isValidUUID, requireValidUUID } from './uuid-guard.js';
+import { noteBrainContact } from './registry-reconciler.js';
 import { DataContext } from '@memberjunction/data-context';
 import { IMetadataProvider, UserInfo, LogStatus, LogError, Metadata, RunQuery, RunView, EntityInfo, EntityFieldInfo, EntityFieldValueInfo, DatabaseProviderBase } from '@memberjunction/core';
 import { MJConversationDetailEntity, QueryEngine } from '@memberjunction/core-entities';
@@ -413,6 +414,13 @@ export class SkipSDK {
             // implies receipt. Confirming here is what makes the key safe to keep
             // across a restart; anything short of this leaves it discardable.
             confirmCallbackKeyDelivered();
+
+            // A parsed final response is also proof the brain is up right now — the only
+            // moment the client can learn which component registry it publishes under.
+            // Startup may have missed it (MJAPI and the Skip API are routinely started
+            // hours apart locally, and a brain can be down for maintenance), so catch up
+            // here. Fire-and-forget: never delays or fails this request.
+            noteBrainContact(options.contextUser);
 
             // Check if Skip itself reported an error (success: false in the response body)
             if (finalResponse.success === false) {

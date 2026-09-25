@@ -30,20 +30,31 @@ Organization identification is handled automatically via the Skip API key -- no 
 
 ### Component Registry URI
 
-Skip components are served from a registry whose base URI is stored on the `MJ: Component Registries` record named `Skip`. The URI is resolved in this order, and the resolved value is what setup persists on that record:
+Skip components are served from a registry whose base URI is stored on a `MJ: Component Registries` record. **Which record depends on the brain**: at boot this client asks the configured brain which registry name it publishes under (`GET /registry/api/v1/registry`), and manages the record with that name. Production brains report `Skip`; other environments report their own name, such as `Skip-Stage` or `Skip-Local`.
+
+You do not configure that name here. It is set on the **brain** via `SKIP_REGISTRY_NAME`, and the client learns it — a URL is not an identity (two URLs can reach the same brain, and one URL can be reassigned), and deriving the name independently on both sides lets them disagree silently. Setting `SKIP_REGISTRY_NAME` in *this* server's environment does nothing, and is reported at boot so it does not read as the feature being broken.
+
+The URI is then resolved in this order, and the resolved value is what setup persists on that record:
 
 1. **`REGISTRY_URI_OVERRIDE_SKIP`** — an explicit registry override wins outright. Use it to point the registry at a different host than the chat endpoint.
 2. **`ASK_SKIP_URL`** — with no explicit override, the configured brain serves its own registry, so `<ASK_SKIP_URL>/registry` is used.
 3. **The stored record value** — with neither variable set, the record is left as-is. On an instance that has never overridden it, that is the production default `https://brain-prod.askskip.ai/registry`.
 
-The env-var name is derived by MemberJunction from the registry record's `Name` (`Skip`), uppercased with non-alphanumeric characters replaced by underscores — hence `REGISTRY_URI_OVERRIDE_SKIP`. The same rule gives `REGISTRY_API_KEY_SKIP`.
+Both variable names are derived by MemberJunction from the registry record's `Name`, so a brain reporting `Skip-Local` is configured with `REGISTRY_URI_OVERRIDE_SKIP_LOCAL`, not `REGISTRY_URI_OVERRIDE_SKIP`. Note MJ uses two *different* rules:
+
+| Variable | Derivation from `Name` |
+|---|---|
+| `REGISTRY_URI_OVERRIDE_<NAME>` | uppercase, every non-alphanumeric → `_` |
+| `REGISTRY_API_KEY_<NAME>` | uppercase, **hyphens only** → `_` |
+
+They agree for hyphenated names (`Skip-Local` → `SKIP_LOCAL`) and diverge for anything else (`Skip.v2` → `SKIP_V2` for the URI but `SKIP.V2` for the key), so keep registry names to letters, digits and hyphens.
 
 Setup runs on install, on every `mj app upgrade`, and on every MJAPI boot (middleware self-heal). Because step 3 falls back to the stored value, a manually corrected row survives those re-runs — but setting either env var makes the environment authoritative and rewrites the row to match.
 
 Step 3 is the one case setup cannot verify, so it logs a warning whenever the stored value stands and is not the production default:
 
 ```
-⚠ Skip component registry URI is https://brain-dev.askskip.ai/registry, not the production
+⚠ "Skip" component registry URI is https://brain-dev.askskip.ai/registry, not the production
   default (https://brain-prod.askskip.ai/registry). Neither REGISTRY_URI_OVERRIDE_SKIP nor
   ASK_SKIP_URL is set, so this stored value stands and Skip components will load from that host.
 ```
@@ -165,6 +176,19 @@ A scoped API key that Skip Brain uses to call back into your MJAPI. Managed auto
 3. On subsequent requests (and after MJAPI restarts), the key is not re-sent -- Skip already has it
 
 The callback key is granted exactly these scopes: `view:run`, `view:batch`, `query:run`, `query:create`, `query:update`, `query:delete`, `query:test`, `search:execute`, `prompt:execute`, `agent:execute`, `embedding:generate`.
+
+### Registry Key (outbound, component fetches)
+
+Every Skip registry route requires authentication, so MemberJunction needs a key to fetch components. It resolves one in this order:
+
+1. `REGISTRY_API_KEY_<REGISTRY_ID>`
+2. `REGISTRY_API_KEY_<REGISTRY_NAME>` — derived and set at boot from the Skip API key
+3. `componentRegistries[].apiKey` in `mj.config.cjs`
+4. A credential named **`Component Registry: <Name>`** in the encrypted MJ credential store
+
+Steps 1–2 are process environment, and this client only sets them when it reached the brain at startup — which would make *rendering* depend on boot order. So setup also writes step 4, which is read at fetch time and survives restarts. A client that booted while the brain was down still renders existing components correctly.
+
+The credential is reconciled rather than created once, so correcting a wrong `ASK_SKIP_API_KEY` is not shadowed by a stale stored value. Environment still outranks it, so an explicit override is never fought.
 
 ## Source Files
 
