@@ -216,6 +216,39 @@ async function reportOrphanedSkipRegistries(
     );
 }
 
+/** What a `REGISTRY_URI_OVERRIDE_SKIP` value means on an instance publishing under another name. */
+export type ProductionRegistryOverrideKind = 'absent' | 'legacy' | 'deliberate';
+
+/**
+ * Decides whether `REGISTRY_URI_OVERRIDE_SKIP` expresses intent about the *production*
+ * registry, or is simply left over from before per-environment names existed.
+ *
+ * The distinction matters because "is it set at all" is the wrong test. Before
+ * per-environment registries, pointing a client at stage or a laptop **was** setting this
+ * variable — so on exactly the clients whose production row is wrong, the variable is set,
+ * and treating that as intent means the repair never runs where it is needed. Not
+ * hypothetical: More Cheese Stage carried it from the single-registry era, and its `Skip`
+ * row kept pointing at the stage brain straight through the upgrade.
+ *
+ * So the test is *where it points*. A value aimed at this instance's own brain cannot be a
+ * statement about production — production is, by definition, somewhere else. A value aimed
+ * anywhere else (a mirror, a proxy) is taken at face value and left alone.
+ *
+ * @param override           Raw `REGISTRY_URI_OVERRIDE_SKIP`, if set.
+ * @param thisEnvironmentURI Registry URI this instance actually resolves to.
+ */
+export function classifyProductionRegistryOverride(
+    override: string | undefined,
+    thisEnvironmentURI: string,
+): ProductionRegistryOverrideKind {
+    const normalize = (v: string) => v.trim().replace(/\/+$/, '').toLowerCase();
+    const value = override?.trim();
+    if (!value) {
+        return 'absent';
+    }
+    return normalize(value) === normalize(thisEnvironmentURI) ? 'legacy' : 'deliberate';
+}
+
 /**
  * Restores the production "Skip" registry's URI when this instance demonstrably uses a
  * different one.
@@ -232,11 +265,17 @@ async function reportOrphanedSkipRegistries(
  *
  * Two cases are deliberately left alone:
  *
- * - **An explicit `REGISTRY_URI_OVERRIDE_SKIP`.** That is an operator pointing production's
- *   registry somewhere on purpose (a mirror, a proxy), and MJ honors it at runtime anyway.
+ * - **A `REGISTRY_URI_OVERRIDE_SKIP` aimed somewhere other than this instance's own brain.**
+ *   That is an operator pointing production's registry somewhere on purpose (a mirror, a
+ *   proxy), and MJ honors it at runtime anyway. See
+ *   {@link classifyProductionRegistryOverride} for why "somewhere other than" is the test
+ *   rather than merely "set".
  * - **This instance actually using `Skip`.** Then `ensureSkipComponentRegistry` owns the
  *   row and its resolution order — including following `ASK_SKIP_URL` for a developer who
  *   has not adopted per-environment names — applies unchanged.
+ *
+ * Every path that declines to act says so. Returning silently meant the only way to find
+ * out nothing had happened was to go and read the table.
  */
 async function healProductionRegistryIfUnused(
     contextUser: UserInfo,
@@ -246,8 +285,30 @@ async function healProductionRegistryIfUnused(
     if (registryName === DEFAULT_SKIP_REGISTRY_NAME) {
         return;
     }
-    if (process.env[getRegistryURIOverrideEnvVar(DEFAULT_SKIP_REGISTRY_NAME)]?.trim()) {
+
+    const overrideVar = getRegistryURIOverrideEnvVar(DEFAULT_SKIP_REGISTRY_NAME);
+    const override = process.env[overrideVar]?.trim();
+    const classification = classifyProductionRegistryOverride(
+        override,
+        resolveSkipRegistryURI(null, registryName).uri,
+    );
+
+    if (classification === 'deliberate') {
+        log(
+            `  ℹ Leaving the production "${DEFAULT_SKIP_REGISTRY_NAME}" component registry alone: ` +
+            `${overrideVar}=${override} points somewhere that is neither production nor this ` +
+            `instance's own brain, so it is treated as a deliberate override.`,
+        );
         return;
+    }
+
+    if (classification === 'legacy') {
+        log(
+            `  ℹ ${overrideVar}=${override} points at this instance's own brain, so it is leftover ` +
+            `wiring from before per-environment registries rather than a statement about production. ` +
+            `Restoring the production record anyway — remove the variable, it is superseded by ` +
+            `${getRegistryURIOverrideEnvVar(registryName)}.`,
+        );
     }
 
     const productionURI = getSkipRegistryURI();
@@ -262,9 +323,19 @@ async function healProductionRegistryIfUnused(
     );
 
     const records = found.Success ? (found.Results ?? []) : [];
-    if (records.length !== 1) {
-        // Zero is normal on an instance that has only ever used a named registry. More than
-        // one is the duplicate-name hazard reported elsewhere, and is not repaired blindly.
+    if (records.length > 1) {
+        // The duplicate-name hazard again, on the production row this time. Do not guess
+        // which one to repair — reportUnsafeRegistryRecords only inspects the registry this
+        // instance publishes under, so nothing else would mention these.
+        LogError(
+            `[skip-client] Found ${records.length} Component Registry records matching the production ` +
+            `"${DEFAULT_SKIP_REGISTRY_NAME}" registry: ${records.map((r) => `${r.ID} (${r.URI ?? 'no URI'})`).join(', ')}. ` +
+            `Not restoring any of them — remove the duplicates, keeping ID ${SKIP_REGISTRY_ID}.`,
+        );
+        return;
+    }
+    if (records.length === 0) {
+        // Normal on an instance that has only ever used a named registry.
         return;
     }
 
