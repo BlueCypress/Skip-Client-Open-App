@@ -1,5 +1,13 @@
 # @askskip/server
 
+## 0.3.3
+
+### Patch Changes
+
+- Updated dependencies [ca9adad]
+  - @askskip/core@0.3.3
+  - @askskip/types@0.3.3
+
 ## 0.3.2
 
 ### Patch Changes
