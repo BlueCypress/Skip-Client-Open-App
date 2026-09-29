@@ -89,6 +89,11 @@ export default async function teardown(payload: SkipHookPayload): Promise<void> 
         // 2. Skip AI Agent + component registry records (created by the setup hook)
         await removeSkipRecords(contextUser, log);
 
+        // 2b. The "Skip API Key" credential the setup hook stored. Leaving it behind
+        //     would make a reinstall's storeCredential collide with the UNIQUE
+        //     (CredentialTypeID, Name) constraint.
+        await deleteSkipApiKeyCredential(rv, contextUser, log);
+
         // 3. Entity Permissions (the 8 seeded rows)
         await deleteByIDs(rv, contextUser, 'MJ: Entity Permissions', ENTITY_PERMISSION_IDS, log);
         // 3. User Roles (the 2 seeded links)
@@ -106,6 +111,24 @@ export default async function teardown(payload: SkipHookPayload): Promise<void> 
         log('✓ Skip Client identity records removed. Note: generic MJ-core API scopes and MJAPI ceiling grants are left in place; only the app-owned query:profile scope is removed.');
     } catch (e) {
         LogError(`[skip-client teardown] ${e instanceof Error ? e.message : String(e)}`);
+    }
+}
+
+/**
+ * Removes the "Skip API Key" credential created by the setup hook. CredentialEngine has
+ * no delete API, so the entity record is loaded and deleted directly.
+ */
+async function deleteSkipApiKeyCredential(
+    rv: RunView,
+    contextUser: UserInfo,
+    log: (m: string) => void,
+): Promise<void> {
+    const res = await rv.RunView<BaseEntity>(
+        { EntityName: 'MJ: Credentials', ExtraFilter: `Name='Skip API Key'`, ResultType: 'entity_object' },
+        contextUser,
+    );
+    for (const cred of res.Results ?? []) {
+        await deleteEntity(cred, log);
     }
 }
 

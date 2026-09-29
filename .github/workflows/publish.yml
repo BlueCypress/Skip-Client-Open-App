@@ -67,6 +67,14 @@ jobs:
         run: npm run version
 
       # Sync mj-app.json version and mjVersionRange from the (possibly bumped) package versions.
+      # mjVersionRange is DERIVED from the @memberjunction/core peer range — hand edits to
+      # mj-app.json's range are overwritten here on every release, so change the peer instead.
+      # The derivation handles union peers ("^5.51.0 || ^6.1.0-edge.4"): a single span
+      # ">=<lowest floor> <(highest major)+1>.0.0" covers all stable versions, and prerelease
+      # alternatives are appended verbatim because node-semver only matches a prerelease when
+      # the range carries a comparator anchored at that exact major.minor.patch. The previous
+      # sed/cut implementation assumed a single simple range and mangled unions
+      # (">=5.51.0 || ^6.1.0-edge.4 <6.0.0" shipped in v0.3.0).
       - name: Sync mj-app.json
         run: |
           set -euo pipefail
@@ -75,12 +83,26 @@ jobs:
           echo "Updated mj-app.json version to $VERSION"
 
           MJ_RAW="$(jq -r '.peerDependencies["@memberjunction/core"]' packages/core/package.json)"
-          MJ_MIN="$(echo "$MJ_RAW" | sed 's/^[^0-9]*//')"
-          MJ_MAJOR="$(echo "$MJ_MIN" | cut -d. -f1)"
-          MJ_NEXT_MAJOR="$(( MJ_MAJOR + 1 )).0.0"
-          MJ_RANGE=">=${MJ_MIN} <${MJ_NEXT_MAJOR}"
+          MJ_RANGE="$(node -e '
+            const raw = process.argv[1];
+            const alts = raw.split("||").map(s => s.trim()).filter(Boolean);
+            const mins = alts.map(a => {
+              const m = a.match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/);
+              if (!m) { console.error(`Cannot parse version from alternative: ${JSON.stringify(a)}`); process.exit(1); }
+              return m[0];
+            });
+            const nums = v => v.split("-")[0].split(".").map(Number);
+            const byAsc = (a, b) => { const [x, y] = [nums(a), nums(b)]; return x[0]-y[0] || x[1]-y[1] || x[2]-y[2]; };
+            const floor = [...mins].sort(byAsc)[0];
+            const cap = Math.max(...mins.map(v => nums(v)[0])) + 1;
+            const parts = [`>=${floor} <${cap}.0.0`];
+            for (let i = 0; i < alts.length; i++) {
+              if (mins[i].includes("-")) parts.push(alts[i]); // prerelease alt: keep verbatim for semver prerelease matching
+            }
+            process.stdout.write(parts.join(" || "));
+          ' "$MJ_RAW")"
           jq --arg range "$MJ_RANGE" '.mjVersionRange = $range' mj-app.json > mj-app.tmp && mv mj-app.tmp mj-app.json
-          echo "Updated mj-app.json mjVersionRange to $MJ_RANGE"
+          echo "Updated mj-app.json mjVersionRange to $MJ_RANGE (from peer: $MJ_RAW)"
 
       - name: Build workspace
         run: npm run build

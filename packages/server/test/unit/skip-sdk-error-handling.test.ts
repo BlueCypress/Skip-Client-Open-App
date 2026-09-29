@@ -76,9 +76,16 @@ vi.mock('@memberjunction/aiengine', () => ({
     AIEngine: { Instance: { Config: vi.fn(), GetAgentByName: vi.fn().mockReturnValue(null) } },
 }));
 
-vi.mock('@memberjunction/global', () => ({
+vi.mock('@memberjunction/global', async (importOriginal) => ({
     CopyScalarsAndArrays: (x: unknown) => x,
     UUIDsEqual: (a: string, b: string) => a === b,
+    IsValidUUID: (await importOriginal<typeof import('@memberjunction/global')>()).IsValidUUID,
+}));
+
+// The SDK lazily imports MJServer's configInfo when resolving the callback URL;
+// mock it so unit tests never load that heavy module.
+vi.mock('@memberjunction/server', () => ({
+    configInfo: { baseUrl: 'http://localhost', publicUrl: '', graphqlPort: 4000, graphqlRootPath: '/' },
 }));
 
 vi.mock('mssql', () => ({}));
@@ -118,7 +125,8 @@ function buildErrorDetail(overrides: Partial<SkipErrorDetail> = {}): SkipErrorDe
 function createSdkWithMockedSSE() {
     const sdk = new SkipSDK({ apiUrl: 'https://test.askskip.ai', apiKey: 'test-key' });
 
-    let responses: Array<{ type: string; value: Record<string, unknown> }> = [];
+    // Loose element shape: wrapped events carry {type, value}, queue events arrive flat.
+    let responses: Array<Record<string, unknown>> = [];
 
     // Stub the private sendSSERequest method
     (sdk as Record<string, unknown>)['sendSSERequest'] = vi.fn().mockImplementation(() =>
@@ -404,6 +412,74 @@ describe('SkipSDK error handling', () => {
             expect(result.success).toBe(false);
             expect(mockDiscardUnconfirmedCallbackKey).toHaveBeenCalled();
             expect(mockConfirmCallbackKeyDelivered).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('flat queue events as the final SSE event', () => {
+        it('returns the queue error text when the stream ends on a flat error event', async () => {
+            const { sdk, setResponses } = createSdkWithMockedSSE();
+
+            setResponses([
+                { responsePhase: 'queued', message: 'Position 2 in queue' },
+                { responsePhase: 'error', message: 'Request failed', error: 'Queue worker crashed' },
+            ]);
+
+            const result = await sdk.chat(makeCallOptions());
+
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Queue worker crashed');
+            expect(mockDiscardUnconfirmedCallbackKey).toHaveBeenCalled();
+            expect(mockConfirmCallbackKeyDelivered).not.toHaveBeenCalled();
+        });
+
+        it('falls back to the queue message when the flat error event has no error text', async () => {
+            const { sdk, setResponses } = createSdkWithMockedSSE();
+
+            setResponses([{ responsePhase: 'error', message: 'Request failed in queue' }]);
+
+            const result = await sdk.chat(makeCallOptions());
+
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Request failed in queue');
+        });
+
+        it('treats a stream ending with only queued/status events as a transport failure', async () => {
+            const { sdk, setResponses } = createSdkWithMockedSSE();
+
+            setResponses([
+                { responsePhase: 'queued', message: 'Position 1 in queue' },
+                { type: 'status_update', value: { responsePhase: SkipResponsePhase.status_update, messages: [] } },
+            ]);
+
+            const result = await sdk.chat(makeCallOptions());
+
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('ended before a final response');
+            expect(mockDiscardUnconfirmedCallbackKey).toHaveBeenCalled();
+            expect(mockConfirmCallbackKeyDelivered).not.toHaveBeenCalled();
+        });
+
+        it('uses the wrapped complete event when flat queue events precede it', async () => {
+            const { sdk, setResponses } = createSdkWithMockedSSE();
+
+            setResponses([
+                { responsePhase: 'queued', message: 'Position 1 in queue' },
+                {
+                    type: 'complete',
+                    value: {
+                        success: true,
+                        responsePhase: SkipResponsePhase.analysis_complete,
+                        messages: [],
+                    },
+                },
+            ]);
+
+            const result = await sdk.chat(makeCallOptions());
+
+            expect(result.success).toBe(true);
+            expect(result.responsePhase).toBe(SkipResponsePhase.analysis_complete);
+            expect(mockConfirmCallbackKeyDelivered).toHaveBeenCalled();
+            expect(mockDiscardUnconfirmedCallbackKey).not.toHaveBeenCalled();
         });
     });
 
