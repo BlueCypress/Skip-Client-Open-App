@@ -25,7 +25,9 @@ import {
     SkipErrorCode,
     SkipRetryAction,
     SkipErrorDetail,
+    SkipClientCapability,
 } from '@askskip/types';
+import { createRequire } from 'node:module';
 import { isValidUUID, requireValidUUID } from './uuid-guard.js';
 import { noteBrainContact } from './registry-reconciler.js';
 import { DataContext } from '@memberjunction/data-context';
@@ -47,6 +49,12 @@ import { CopyScalarsAndArrays, UUIDsEqual } from '@memberjunction/global';
 import mssql from 'mssql';
 import { BehaviorSubject } from 'rxjs';
 import { take } from 'rxjs/operators';
+
+/** This package's version, sent to Skip as `skipSDKVersion`. */
+const SKIP_SDK_VERSION: string = createRequire(import.meta.url)('../package.json').version;
+
+/** Features this SDK acts on, sent to Skip as `clientCapabilities`. */
+const CLIENT_CAPABILITIES: string[] = [SkipClientCapability.ArtifactDirective];
 
 /**
  * Configuration options for Skip SDK
@@ -576,7 +584,9 @@ export class SkipSDK {
             callingServerURL: baseRequest.callingServerURL,
             callingServerAPIKey: baseRequest.callingServerAPIKey,
             externalReferenceID,
-            databasePlatform: baseRequest.databasePlatform
+            databasePlatform: baseRequest.databasePlatform,
+            clientCapabilities: [...CLIENT_CAPABILITIES],
+            skipSDKVersion: SKIP_SDK_VERSION
         };
 
         return request;

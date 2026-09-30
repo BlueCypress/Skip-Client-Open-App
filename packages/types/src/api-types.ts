@@ -237,7 +237,27 @@ export class SkipAPIRequest {
      * If not provided, Skip should default to 'sqlserver' for backward compatibility.
      */
     databasePlatform?: DatabasePlatform;
+
+    /**
+     * Optional features the calling Skip SDK can act on, from {@link SkipClientCapability}.
+     * Absent means none: Skip must not rely on a feature the request does not declare.
+     */
+    clientCapabilities?: string[];
+
+    /**
+     * Version of the calling `@askskip/server` package. Informational only, for correlating
+     * a Skip run to a client build — gate behavior on `clientCapabilities`, not on this.
+     */
+    skipSDKVersion?: string;
 }
+
+/** Optional features a Skip SDK declares in {@link SkipAPIRequest.clientCapabilities}. */
+export const SkipClientCapability = {
+    /** The client forwards a response's `artifactRequest` to MJ as an `artifactDirective`. */
+    ArtifactDirective: 'artifactDirective',
+} as const;
+
+export type SkipClientCapability = typeof SkipClientCapability[keyof typeof SkipClientCapability];
 
 /**
  * Defines the shape of the data that is returned by the Skip API Server
