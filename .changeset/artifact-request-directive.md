@@ -8,6 +8,7 @@ Forward Skip's `artifactRequest` to MemberJunction as a per-step `artifactDirect
 
 - `@askskip/types`: `SkipAPIClarifyingQuestionResponse.artifactRequest` — a clarifying question (e.g. PRD review) now says whether its draft payload belongs to a new artifact or versions an existing one.
 - `@askskip/types`: `SkipAPIRequest.clientCapabilities` and `SkipAPIRequest.skipSDKVersion`, plus the `SkipClientCapability` names. Skip treats an absent `clientCapabilities` as an older client and does not rely on any capability.
+- `@askskip/types`: `SkipAPIArtifactRequest.name` and `.description` are optional, so Skip can omit them instead of sending placeholder text — MJ then names a new artifact from its content.
 - `@askskip/server`: `SkipProxyAgent` maps `new_artifact` → `create-new` and `new_artifact_version` → `version-source` (+ `targetArtifactId`) on both `analysis_complete` and `clarifying_question`, so a same-conversation new component is no longer saved as version N of the previous artifact, and a retargeted modify versions the right artifact.
 - `@askskip/server`: `SkipSDK` sends `clientCapabilities: ['artifactDirective']` and its own package version on every request.
 

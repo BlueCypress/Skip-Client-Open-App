@@ -65,6 +65,12 @@ describe('mapArtifactRequestToDirective', () => {
     it('returns undefined for no request', () => {
         expect(mapArtifactRequestToDirective(undefined)).toBeUndefined();
     });
+
+    it('invents no name or description when Skip sends none, so MJ names the artifact from its content', () => {
+        const directive = mapArtifactRequestToDirective({ action: 'new_artifact' });
+        expect(directive?.name).toBeUndefined();
+        expect(directive?.description).toBeUndefined();
+    });
 });
 
 describe('SkipProxyAgent artifact directive forwarding', () => {
