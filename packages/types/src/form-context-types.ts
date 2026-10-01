@@ -65,7 +65,8 @@ export interface SkipFormCompositionContribution {
     SectionPosition?: 'start' | 'end';
     FieldNames: string[];
     SectionKeys: string[];
-    ReplacesPlace?: string;
+    /** True when the row stands in for a section, several sections or a related grid. */
+    ReplacesPlace?: boolean;
 }
 
 /** The `Result` of MJ's `Get Form Composition For Entity` action. */
