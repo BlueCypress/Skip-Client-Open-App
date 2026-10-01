@@ -1,72 +1,95 @@
 /**
- * The MJ form composition snapshot — what is on the entity form the user is looking at.
+ * The MJ entity form the user is looking at, as the MJ shell publishes it into
+ * `AppContext.AdditionalContext.Form` (`FormAgentContext` in `@memberjunction/ng-base-forms`),
+ * plus the server's composition of that form when the client could load it.
  *
- * Structural mirror of `FormCompositionSnapshot` in `@memberjunction/ng-base-forms`, kept
- * independent so this package stays free of Angular dependencies. **Field names must match**:
- * the value crosses the wire as plain JSON from the MJ shell, with no translation layer to
- * catch a rename on either side.
+ * Field names match MJ's exactly; the value crosses the wire untranslated.
  */
 
-/** Where on the entity form a panel mounts. */
-export type SkipFormContextSlot = 'top-area' | 'before-fields' | 'after-fields' | 'after-related' | 'after-everything';
+/** Which form the user sees: the generated form, or one full custom form. */
+export interface SkipFormChoice {
+    /** True when a full custom form owns the whole body, so no section, grid or panel draws. */
+    FullCustomForm: boolean;
+    /** The `MJ: Entity Form Overrides` row the user sees, or null for the generated form. */
+    OverrideID: string | null;
+    /** The form's name in the form picker. */
+    Label: string;
+}
 
-/** One input inside a field section. */
-export interface SkipFormContextField {
+/** One panel the open form draws: a field section, a related grid, or a contribution. */
+export interface SkipFormContextSection {
+    Key: string;
+    Title: string;
+    /** 'default' | 'related-entity' | 'inherited' */
+    Variant: string;
+    Hidden: boolean;
+    /** The contribution that draws this section or stands in for it, or null when none does. */
+    ContributionKey: string | null;
+}
+
+export interface SkipFormCompositionField {
     Name: string;
     Label: string;
 }
 
-/** One field section on the form. */
-export interface SkipFormContextSection {
+/** One field section as the server derives it from entity metadata. */
+export interface SkipFormCompositionSection {
     Key: string;
     Title: string;
     Variant: string;
-    /** Rail group key, or null when the section is not in any first-class group. */
     Group: string | null;
     Hidden: boolean;
-    /**
-     * The inputs this section draws. Present so a panel author can see what the form
-     * already shows; a section with no fields of its own, such as a related grid, has none.
-     * Optional so an older client's snapshot still parses.
-     */
-    Fields?: SkipFormContextField[];
+    Fields: SkipFormCompositionField[];
 }
 
-/** One related-record grid on the form. */
-export interface SkipFormContextRelated {
+/** One related-record grid the generated form shows. */
+export interface SkipFormCompositionRelated {
     Entity: string;
     JoinField: string;
     SectionKey: string;
     Inclusion: 'Primary' | 'More' | 'None' | 'Auto';
-    /** baked = in the template; stock = container fill-in; claimed = a contribution replaced it. */
     Source: 'baked' | 'stock' | 'claimed';
 }
 
-/** One contribution already installed on the form. */
-export interface SkipFormContextContribution {
+/** One metadata contribution the caller sees on the form. */
+export interface SkipFormCompositionContribution {
     Key: string;
-    Slot: SkipFormContextSlot;
-    Source: 'class' | 'metadata';
+    Slot: string;
+    Source: 'metadata';
     Title: string;
     Presentation: 'panel' | 'bare';
     Hidden: boolean;
     Precedence: number;
+    SortKey: number;
+    InSectionKey?: string;
+    SectionPosition?: 'start' | 'end';
+    FieldNames: string[];
+    SectionKeys: string[];
+    ReplacesPlace?: string;
 }
 
-/** The composition of one entity form, as the shell resolved it. */
+/** The `Result` of MJ's `Get Form Composition For Entity` action. */
+export interface SkipFormComposition {
+    Entity: string;
+    Layout: 'accordion' | 'left-nav';
+    FullCustomForm: boolean;
+    MetadataContributionsEnabled: boolean;
+    Sections: SkipFormCompositionSection[];
+    Related: SkipFormCompositionRelated[];
+    Contributions: SkipFormCompositionContribution[];
+    SlotsPresent: string[];
+    ChromeRuleCount: number;
+    Note: string;
+}
+
+/** The open form, as `SkipAPIRequest.formContext` carries it. */
 export interface SkipFormContext {
     Entity: string;
-    /**
-     * Which record the composition describes, as `PrimaryKey.ToString()`.
-     *
-     * The app context is global and replaced wholesale by whichever surface published last,
-     * so a consumer cannot assume the snapshot belongs to the record under discussion.
-     */
-    RecordPrimaryKey: string;
-    Layout: 'accordion' | 'left-nav';
+    /** The record as `CompositeKey.ToURLSegment()` (e.g. `ID|42`); null for a record not saved yet. */
+    RecordPrimaryKey: string | null;
+    FormChoice: SkipFormChoice;
+    /** Every section the open form draws, hidden ones included. Authoritative for section keys. */
     Sections: SkipFormContextSection[];
-    Related: SkipFormContextRelated[];
-    Contributions: SkipFormContextContribution[];
-    SlotsPresent: SkipFormContextSlot[];
-    ChromeRuleCount: number;
+    /** Fields per section, related grids, slots and metadata contributions; absent when the client could not load them. */
+    Composition?: SkipFormComposition;
 }

@@ -252,9 +252,10 @@ export class SkipAPIRequest {
     skipSDKVersion?: string;
 
     /**
-     * Composition of the MJ entity form the user is currently viewing — its sections, related
-     * grids, the contributions already on it, and the slots it emits. Sent on every message
-     * when the caller is on a record form; absent otherwise.
+     * The MJ entity form the user is looking at: which record, which form, the sections it
+     * draws, and (when the client could load it) the server's composition with fields per
+     * section, related grids, slots and installed contributions. Absent when the caller is
+     * not on a record form.
      *
      * `RecordPrimaryKey` says which record it describes. The app context it comes from is
      * global and replaced wholesale by whichever surface published last, so a consumer must
