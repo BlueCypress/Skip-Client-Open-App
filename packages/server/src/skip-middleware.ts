@@ -20,9 +20,20 @@ import type { Application, Request, Response, RequestHandler } from 'express';
 import { Router, json as jsonBodyParser } from 'express';
 import { GetAPIKeyEngine } from '@memberjunction/api-keys';
 import { UserCache } from '@memberjunction/sqlserver-dataprovider';
-import { ensureSkipRecords, getSkipConfig, DEFAULT_SKIP_BASE_URL, getSkipRegistryURI, resolveSkipApiKey } from '@askskip/core';
+import {
+    ensureSkipRecords,
+    getSkipConfig,
+    DEFAULT_SKIP_BASE_URL,
+    DEFAULT_SKIP_REGISTRY_NAME,
+    fetchSkipRegistryName,
+    getRegistryAPIKeyEnvVar,
+    getRegistryURIOverrideEnvVar,
+    getSkipRegistryURI,
+    resolveSkipApiKey,
+} from '@askskip/core';
 import { SkipSDK } from './skip-sdk.js';
 import { APP_OWNED_SCOPE_PATHS, REQUIRED_SCOPE_PATHS } from './skip-callback-key-provisioner.js';
+import { markRegistryReconciled } from './registry-reconciler.js';
 
 // Side-effect import: ensure SkipProxyAgent's @RegisterClass(BaseAgent, 'SkipProxyAgent') runs.
 import './skip-agent.js';
@@ -54,11 +65,20 @@ export class SkipMiddleware extends BaseServerMiddleware {
      */
     async Initialize(): Promise<void> {
         try {
-            // Derive REGISTRY_URI_OVERRIDE_SKIP and REGISTRY_API_KEY_SKIP from the Skip
-            // config so operators don't have to set them separately. MJ's ComponentRegistryResolver
-            // reads these env vars to override the production registry URI and authenticate.
-            // Only set if not already explicitly configured (env vars win over derived values).
-            await this.deriveRegistryEnvVars();
+            // Ask the brain which registry it publishes under BEFORE deriving anything: both
+            // env var names and the registry record's identity are functions of that name.
+            // A null answer means "unknown" — derive and manage nothing rather than guess.
+            const registryName = await this.resolveRegistryName();
+
+            this.warnIfRegistryNameSetOnClient();
+
+            if (registryName) {
+                // Derive REGISTRY_URI_OVERRIDE_<NAME> and REGISTRY_API_KEY_<NAME> from the Skip
+                // config so operators don't have to set them separately. MJ's ComponentRegistryResolver
+                // reads these env vars to override the registry URI and authenticate.
+                // Only set if not already explicitly configured (env vars win over derived values).
+                await this.deriveRegistryEnvVars(registryName);
+            }
             this.logAdvertisedCallbackURL();
 
             const engine = GetAPIKeyEngine();
@@ -120,7 +140,11 @@ export class SkipMiddleware extends BaseServerMiddleware {
                 // IMetadataProvider through a cast, and happens to work here solely because
                 // ensureSkipRecords sticks to GetEntityObject(). Passing the real provider
                 // keeps that from silently breaking if it ever reaches for more.
-                await ensureSkipRecords(Metadata.Provider, systemUser, (m) => LogStatus(m));
+                await ensureSkipRecords(Metadata.Provider, systemUser, (m) => LogStatus(m), registryName ?? undefined);
+                if (registryName) {
+                    // Startup got there first; the request path need not repeat this.
+                    markRegistryReconciled(registryName);
+                }
             }
         } catch (e) {
             LogError(`[skip-client] Middleware Initialize() warning: ${e instanceof Error ? e.message : String(e)}`);
@@ -250,20 +274,27 @@ export class SkipMiddleware extends BaseServerMiddleware {
      * instead of the row quietly claiming production. Explicit env vars always win
      * (not overwritten).
      */
-    private async deriveRegistryEnvVars(): Promise<void> {
+    private async deriveRegistryEnvVars(registryName: string): Promise<void> {
         const config = getSkipConfig();
         const skipURL = config.skipURL?.replace(/\/+$/, '');
 
+        // Both variable names are derived from the registry name, because that is how MJ
+        // reads them (ComponentRegistryResolver uppercases the Name and replaces every
+        // non-alphanumeric character with '_'). Hardcoding the production spelling would
+        // set variables MJ never looks at on a non-production instance.
+        const uriOverrideVar = getRegistryURIOverrideEnvVar(registryName);
+        const apiKeyVar = getRegistryAPIKeyEnvVar(registryName);
+
         // Derive registry URI: only override when pointing at non-production Skip
-        if (skipURL && skipURL !== DEFAULT_SKIP_BASE_URL && !process.env.REGISTRY_URI_OVERRIDE_SKIP) {
-            process.env.REGISTRY_URI_OVERRIDE_SKIP = getSkipRegistryURI(skipURL);
-            LogStatus(`[skip-client] Derived REGISTRY_URI_OVERRIDE_SKIP from ASK_SKIP_URL: ${process.env.REGISTRY_URI_OVERRIDE_SKIP}`);
+        if (skipURL && skipURL !== DEFAULT_SKIP_BASE_URL && !process.env[uriOverrideVar]) {
+            process.env[uriOverrideVar] = getSkipRegistryURI(skipURL);
+            LogStatus(`[skip-client] Derived ${uriOverrideVar} from ASK_SKIP_URL: ${process.env[uriOverrideVar]}`);
         }
 
         // Derive registry API key: reuse the Skip API key if no explicit registry key is set.
         // The key may live only in the encrypted credential store (not in ASK_SKIP_API_KEY env),
         // so fall back to resolveSkipApiKey() which checks the credential store.
-        if (!process.env.REGISTRY_API_KEY_SKIP) {
+        if (!process.env[apiKeyVar]) {
             let apiKey = config.apiKey;
             if (!apiKey) {
                 const systemUser = UserCache.Instance.GetSystemUser();
@@ -272,9 +303,75 @@ export class SkipMiddleware extends BaseServerMiddleware {
                 }
             }
             if (apiKey) {
-                process.env.REGISTRY_API_KEY_SKIP = apiKey;
-                LogStatus('[skip-client] Derived REGISTRY_API_KEY_SKIP from Skip API key.');
+                process.env[apiKeyVar] = apiKey;
+                LogStatus(`[skip-client] Derived ${apiKeyVar} from Skip API key.`);
             }
         }
+    }
+
+    /**
+     * Warns when `SKIP_REGISTRY_NAME` is set in the *client's* environment.
+     *
+     * It is the brain's variable. Nothing on this side reads it — the client asks the brain
+     * for its registry name precisely so the two cannot be configured into disagreement. A
+     * developer who sets it here sees no error and no effect, and reasonably concludes the
+     * feature is broken, so say so plainly rather than ignoring it.
+     */
+    private warnIfRegistryNameSetOnClient(): void {
+        // Spelled out rather than imported. This variable belongs to the Skip brain (its
+        // authoritative definition is SKIP_REGISTRY_NAME_ENV_VAR in Skip-Brain's
+        // @skip-brain/core), and the client only ever observes it to report a misconfiguration.
+        // Taking a package dependency for one diagnostic string would couple the two
+        // repositories for less than it costs.
+        const BRAIN_REGISTRY_NAME_ENV_VAR = 'SKIP_REGISTRY_NAME';
+        const stray = process.env[BRAIN_REGISTRY_NAME_ENV_VAR]?.trim();
+        if (!stray) {
+            return;
+        }
+        LogError(
+            `[skip-client] ${BRAIN_REGISTRY_NAME_ENV_VAR}="${stray}" is set in this MJAPI environment, where it ` +
+            `has no effect — it configures the Skip brain, not the client. This client asks the brain which ` +
+            `registry it publishes under. Set it in the brain's environment and restart the brain, then restart ` +
+            `this server (or send one Skip request) to pick it up.`,
+        );
+    }
+
+    /**
+     * Asks the brain which registry name it publishes under. Returns `null` when the brain
+     * does not answer.
+     *
+     * `null` means *unknown*, and must not be collapsed into the production default. A brain
+     * that is merely slow to start would otherwise cause this client to manage the
+     * production "Skip" record on a machine pointed at a local brain, rewriting production's
+     * URI to `localhost` — the precise drift per-environment naming exists to eliminate, and
+     * a transient outage at boot is an entirely ordinary way to hit it.
+     *
+     * A brain predating per-environment naming also returns `null`. That is equally
+     * unknown: it might be production or it might not, and this client cannot tell.
+     */
+    private async resolveRegistryName(): Promise<string | null> {
+        const config = getSkipConfig();
+        let apiKey = config.apiKey;
+        if (!apiKey) {
+            const systemUser = UserCache.Instance.GetSystemUser();
+            if (systemUser) {
+                apiKey = await resolveSkipApiKey(systemUser);
+            }
+        }
+
+        const reported = await fetchSkipRegistryName({ skipURL: config.skipURL, apiKey });
+        if (!reported) {
+            LogStatus(
+                `[skip-client] Brain at ${config.skipURL} did not report a registry name (unreachable, or a ` +
+                `build predating per-environment registries). Leaving all Component Registry records and ` +
+                `REGISTRY_* variables untouched this boot — existing records keep serving components.`,
+            );
+            return null;
+        }
+
+        if (reported !== DEFAULT_SKIP_REGISTRY_NAME) {
+            LogStatus(`[skip-client] Brain publishes components under the "${reported}" component registry.`);
+        }
+        return reported;
     }
 }

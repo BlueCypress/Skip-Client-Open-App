@@ -11,6 +11,7 @@ import { resolve, dirname, parse } from 'path';
 import { CredentialEngine } from '@memberjunction/credentials';
 import { LogError, LogStatus } from '@memberjunction/core';
 import type { UserInfo } from '@memberjunction/core';
+import { DEFAULT_SKIP_REGISTRY_NAME } from '@askskip/types';
 
 /** Default Skip API base URL. Override with ASK_SKIP_URL env var for non-production environments. */
 export const DEFAULT_SKIP_BASE_URL = 'https://brain-prod.askskip.ai';
@@ -29,14 +30,58 @@ export function getSkipRegistryURI(skipBaseURL: string = DEFAULT_SKIP_BASE_URL):
     return `${stripTrailingSlashes(skipBaseURL)}/registry`;
 }
 
+// The default registry name is shared with the Skip brain repository, so it is defined
+// once in @askskip/types. Re-exported here so importers of @askskip/core are unaffected.
+export { DEFAULT_SKIP_REGISTRY_NAME } from '@askskip/types';
+
 /**
- * Environment variable MJ reads to override the "Skip" component registry's URI.
+ * Converts a registry name into the suffix MJ uses for its per-registry environment
+ * variables (`REGISTRY_URI_OVERRIDE_<SUFFIX>`, `REGISTRY_API_KEY_<SUFFIX>`).
  *
- * The name is not ours to choose: `ComponentRegistryResolver.getRegistryUri()` derives it
- * from the registry record's `Name` — uppercased with every non-alphanumeric character
- * replaced by an underscore. Our record is named `Skip` (see `SKIP_REGISTRY_ID` in
- * skip-records.ts), so the variable is `REGISTRY_URI_OVERRIDE_SKIP`. Renaming the record
- * would rename this variable.
+ * This transformation is not ours to choose — it mirrors
+ * `ComponentRegistryResolver.getRegistryUri()`, which uppercases the registry record's
+ * `Name` and replaces every non-alphanumeric character with an underscore. Diverging here
+ * means MJ reads variables we never set.
+ *
+ * Lives in the SDK rather than in the shared types package because only the SDK derives
+ * these variables — the brain never reads them. (If the brain ever validates a configured
+ * registry name against the collision below, move this to @askskip/types then, not before.)
+ *
+ * Note the collision this admits: `Skip-Stage` and `Skip_Stage` both yield `SKIP_STAGE`.
+ * Registry names must be distinct *after* this transformation, not merely as written.
+ */
+export function deriveRegistryEnvVarSuffix(registryName: string): string {
+    return registryName.replace(/[^A-Za-z0-9]/g, '_').toUpperCase();
+}
+
+/** Environment variable MJ reads to override a given registry's URI. */
+export function getRegistryURIOverrideEnvVar(registryName: string = DEFAULT_SKIP_REGISTRY_NAME): string {
+    return `REGISTRY_URI_OVERRIDE_${deriveRegistryEnvVarSuffix(registryName)}`;
+}
+
+/**
+ * Environment variable MJ reads for a given registry's API key.
+ *
+ * Deliberately NOT {@link deriveRegistryEnvVarSuffix}. MJ derives its two per-registry
+ * variables by different rules, and mirroring the wrong one sets a variable it never reads:
+ *
+ *   URI      `registry.Name.replace(/[^A-Za-z0-9]/g, '_').toUpperCase()`  — all non-alphanumerics
+ *   API key  `registry.Name?.replace(/-/g, '_').toUpperCase()`            — hyphens only
+ *
+ * They agree for hyphenated names (`Skip-Local` → `SKIP_LOCAL`) and diverge for anything
+ * else (`Skip.v2` → `SKIP_V2` for the URI but `SKIP.V2` for the key). Keep registry names
+ * to alphanumerics and hyphens and the distinction never bites; this function is faithful
+ * to MJ either way.
+ */
+export function getRegistryAPIKeyEnvVar(registryName: string = DEFAULT_SKIP_REGISTRY_NAME): string {
+    return `REGISTRY_API_KEY_${registryName.replace(/-/g, '_').toUpperCase()}`;
+}
+
+/**
+ * Environment variable MJ reads to override the production "Skip" registry's URI.
+ *
+ * Retained as the production-named constant; use {@link getRegistryURIOverrideEnvVar} when
+ * the registry name is not necessarily the production default.
  */
 export const SKIP_REGISTRY_URI_OVERRIDE_ENV_VAR = 'REGISTRY_URI_OVERRIDE_SKIP';
 
@@ -59,8 +104,11 @@ export const SKIP_REGISTRY_URI_OVERRIDE_ENV_VAR = 'REGISTRY_URI_OVERRIDE_SKIP';
  * @param fallbackURI URI currently stored on the registry record, if any. Omit when creating a
  *                    record from scratch — the production default is used instead.
  */
-export function getConfiguredSkipRegistryURI(fallbackURI?: string | null): string {
-    return resolveSkipRegistryURI(fallbackURI).uri;
+export function getConfiguredSkipRegistryURI(
+    fallbackURI?: string | null,
+    registryName: string = DEFAULT_SKIP_REGISTRY_NAME,
+): string {
+    return resolveSkipRegistryURI(fallbackURI, registryName).uri;
 }
 
 /** Which tier of {@link resolveSkipRegistryURI} produced the URI. */
@@ -80,8 +128,11 @@ export interface ResolvedSkipRegistryURI {
  * instance, and also how a database restored from another environment keeps pointing at
  * that environment's brain — so callers surface it rather than resolving in silence.
  */
-export function resolveSkipRegistryURI(fallbackURI?: string | null): ResolvedSkipRegistryURI {
-    const override = process.env[SKIP_REGISTRY_URI_OVERRIDE_ENV_VAR]?.trim();
+export function resolveSkipRegistryURI(
+    fallbackURI?: string | null,
+    registryName: string = DEFAULT_SKIP_REGISTRY_NAME,
+): ResolvedSkipRegistryURI {
+    const override = process.env[getRegistryURIOverrideEnvVar(registryName)]?.trim();
     if (override) {
         return { uri: stripTrailingSlashes(override), source: 'override' };
     }
@@ -100,6 +151,57 @@ export function resolveSkipRegistryURI(fallbackURI?: string | null): ResolvedSki
     }
 
     return { uri: getSkipRegistryURI(), source: 'default' };
+}
+
+/**
+ * Asks the configured brain which registry name it publishes under.
+ *
+ * The brain is the single source of truth for this. Deriving it on the client from
+ * `ASK_SKIP_URL` would be guessing: a URL is not an identity (two URLs can reach the same
+ * brain, and one URL can be reassigned), and independent derivation on both sides lets
+ * them disagree silently — producing `Registry not found: <name>` with no obvious cause.
+ *
+ * Returns `null` on any failure — unreachable brain, non-200, malformed body, or a brain
+ * too old to report the field. Callers must treat `null` as "leave the record alone"
+ * rather than substituting a default: creating a wrongly-named registry record is worse
+ * than creating none, because it yields specs pointing at a registry nobody serves.
+ */
+export async function fetchSkipRegistryName(
+    options: { skipURL?: string; apiKey?: string; timeoutMs?: number } = {},
+): Promise<string | null> {
+    const baseURL = stripTrailingSlashes(options.skipURL ?? process.env.ASK_SKIP_URL ?? DEFAULT_SKIP_BASE_URL);
+    const url = `${baseURL}/registry/api/v1/registry`;
+
+    try {
+        const headers: Record<string, string> = { Accept: 'application/json' };
+        if (options.apiKey) {
+            headers.Authorization = `Bearer ${options.apiKey}`;
+        }
+
+        const response = await fetch(url, {
+            headers,
+            signal: AbortSignal.timeout(options.timeoutMs ?? 10000),
+        });
+        if (!response.ok) {
+            LogError(`[skip-config] Registry info request to ${url} returned HTTP ${response.status}.`);
+            return null;
+        }
+
+        const body = (await response.json()) as { registryName?: unknown };
+        const name = typeof body.registryName === 'string' ? body.registryName.trim() : '';
+        if (!name) {
+            // A brain predating per-environment naming omits the field entirely. That is
+            // not an error — it simply cannot tell us, so the caller leaves things as they are.
+            return null;
+        }
+        return name;
+    } catch (error: unknown) {
+        LogError(
+            `[skip-config] Could not read the registry name from ${url}: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+        return null;
+    }
 }
 
 /**

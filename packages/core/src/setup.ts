@@ -17,7 +17,12 @@ import { LogStatus, LogError } from '@memberjunction/core';
 import type { UserInfo, IMetadataProvider } from '@memberjunction/core';
 import { CredentialEngine } from '@memberjunction/credentials';
 import type { MJCredentialEntity } from '@memberjunction/core-entities';
-import { getSkipConfig, DEFAULT_ENTITIES_TO_SEND } from './skip-config.js';
+import {
+    getSkipConfig,
+    DEFAULT_ENTITIES_TO_SEND,
+    DEFAULT_SKIP_REGISTRY_NAME,
+    fetchSkipRegistryName,
+} from './skip-config.js';
 import { ensureSkipRecords } from './skip-records.js';
 import { existsSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
@@ -91,8 +96,14 @@ export default async function setup(payload: SkipHookPayload): Promise<void> {
     // Create the "Skip" AI Agent + component registry records (the agent record is what
     // `@skip` resolves to). Done via the entity framework so the wide AIAgent table's
     // defaults are applied correctly. Idempotent and non-fatal.
+    //
+    // The registry name comes from the brain itself, so install creates the record under
+    // the same name the brain will stamp into component specs. An unreachable brain yields
+    // the production default — install must not block on a network call.
     try {
-        await ensureSkipRecords(payload.Provider as IMetadataProvider, contextUser, log);
+        const registryName = (await fetchSkipRegistryName({ skipURL: getSkipConfig().skipURL, apiKey }))
+            ?? DEFAULT_SKIP_REGISTRY_NAME;
+        await ensureSkipRecords(payload.Provider as IMetadataProvider, contextUser, log, registryName);
     } catch (e) {
         LogError(`[skip-client setup] Could not create Skip metadata records: ${errorText(e)}`);
     }
