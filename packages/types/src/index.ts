@@ -6,6 +6,7 @@ export * from './query-types.js';
 export * from './profile-types.js';
 export * from './agent-types.js';
 export * from './artifact-types.js';
+export * from './form-context-types.js';
 export * from './auth-types.js';
 export * from './error-types.js';
 export * from './registry-types.js';

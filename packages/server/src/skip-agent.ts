@@ -19,10 +19,11 @@ import {
     SkipAPIClarifyingQuestionResponse,
     SkipAPIArtifactRequest,
     SkipMessage,
-    SkipRequestPhase
+    SkipRequestPhase,
 } from "@askskip/types";
 import { isValidUUID, requireValidUUID } from "./uuid-guard.js";
 import { SkipSDK, SkipCallOptions } from "./skip-sdk.js";
+import { BuildFormContext } from "./form-context.js";
 import { DataContext } from "@memberjunction/data-context";
 import { LogStatus, LogError, RunView, UserInfo } from "@memberjunction/core";
 import { ChatMessage } from "@memberjunction/ai";
@@ -179,6 +180,8 @@ export class SkipProxyAgent extends BaseAgent {
             params.contextUser
         );
 
+        const formContext = await BuildFormContext(params.data, params.contextUser);
+
         // Prepare Skip SDK call options
         const skipOptions: SkipCallOptions = {
             payload: params.payload,
@@ -195,6 +198,7 @@ export class SkipProxyAgent extends BaseAgent {
             forceEntityRefresh: context.forceEntityRefresh || false,
             includeCallbackAuth: true,
             externalReferenceID: this.AgentRun?.ID ?? undefined,
+            formContext: formContext ?? undefined,
             onStatusUpdate: (message: string, responsePhase?: string) => {
                 // Forward Skip status updates to MJ progress callback
                 if (params.onProgress) {

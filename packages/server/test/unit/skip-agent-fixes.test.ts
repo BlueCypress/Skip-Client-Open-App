@@ -29,11 +29,15 @@ vi.mock('@memberjunction/ai-agents', () => ({
 }));
 
 vi.mock('@memberjunction/global', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@memberjunction/global')>()),
     RegisterClass: () => (target: unknown) => target,
-    IsValidUUID: (await importOriginal<typeof import('@memberjunction/global')>()).IsValidUUID,
 }));
 
-vi.mock('@memberjunction/core', () => ({
+// Spread the real module: skip-agent.ts imports @memberjunction/core-entities, whose
+// generated classes extend BaseEntity at module scope. A replacement mock omits it and the
+// suite fails to load before any test runs.
+vi.mock('@memberjunction/core', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@memberjunction/core')>()),
     LogStatus: vi.fn(),
     LogError: vi.fn(),
     RunView: class {
