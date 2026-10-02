@@ -20,10 +20,10 @@ import {
     SkipAPIArtifactRequest,
     SkipMessage,
     SkipRequestPhase,
-    SkipFormContext,
 } from "@askskip/types";
 import { isValidUUID, requireValidUUID } from "./uuid-guard.js";
 import { SkipSDK, SkipCallOptions } from "./skip-sdk.js";
+import { BuildFormContext } from "./form-context.js";
 import { DataContext } from "@memberjunction/data-context";
 import { LogStatus, LogError, RunView, UserInfo } from "@memberjunction/core";
 import { ChatMessage } from "@memberjunction/ai";
@@ -180,6 +180,8 @@ export class SkipProxyAgent extends BaseAgent {
             params.contextUser
         );
 
+        const formContext = await BuildFormContext(params.data, params.contextUser);
+
         // Prepare Skip SDK call options
         const skipOptions: SkipCallOptions = {
             payload: params.payload,
@@ -196,7 +198,7 @@ export class SkipProxyAgent extends BaseAgent {
             forceEntityRefresh: context.forceEntityRefresh || false,
             includeCallbackAuth: true,
             externalReferenceID: this.AgentRun?.ID ?? undefined,
-            formContext: ExtractFormContext(params.data) ?? undefined,
+            formContext: formContext ?? undefined,
             onStatusUpdate: (message: string, responsePhase?: string) => {
                 // Forward Skip status updates to MJ progress callback
                 if (params.onProgress) {
@@ -558,37 +560,4 @@ export class SkipProxyAgent extends BaseAgent {
             ...directiveField
         };
     }
-}
-
-/** The arrays an agent would misread as "this form has none" if they were absent. */
-const REQUIRED_FORM_CONTEXT_ARRAYS = ['Sections', 'Related', 'Contributions', 'SlotsPresent'] as const;
-
-/**
- * The open form's composition, read out of the MJ app context snapshot.
- *
- * The shell publishes it as `appContext.AdditionalContext.Form`, and it is absent far more
- * often than it is present — the user has to be on a record form for there to be one. So a
- * missing snapshot is the normal case and returns null rather than raising.
- *
- * A *partial* snapshot is a different matter and is also rejected. An agent reading
- * `Sections: undefined` would design a panel for a form it believes has no sections; a null
- * tells it, correctly, that it knows nothing about the form.
- */
-export function ExtractFormContext(data: Record<string, unknown> | undefined): SkipFormContext | null {
-    const appContext = data?.appContext;
-    if (!appContext || typeof appContext !== 'object') return null;
-
-    const additional = (appContext as Record<string, unknown>).AdditionalContext;
-    if (!additional || typeof additional !== 'object') return null;
-
-    const form = (additional as Record<string, unknown>).Form;
-    if (!form || typeof form !== 'object') return null;
-
-    const candidate = form as Record<string, unknown>;
-    if (typeof candidate.Entity !== 'string' || candidate.Entity.length === 0) return null;
-    for (const key of REQUIRED_FORM_CONTEXT_ARRAYS) {
-        if (!Array.isArray(candidate[key])) return null;
-    }
-
-    return form as SkipFormContext;
 }
