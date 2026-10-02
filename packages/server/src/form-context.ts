@@ -5,44 +5,65 @@ import type { SkipFormChoice, SkipFormComposition, SkipFormContext, SkipFormCont
 /** The MJ action that derives a form's composition from metadata, run as the requesting user. */
 const COMPOSITION_ACTION_NAME = 'Get Form Composition For Entity';
 
+type Entry = Record<string, unknown>;
+
+/** True for a plain object; false for null, arrays and primitives. */
+function isRecord(value: unknown): value is Entry {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** True for a form section entry with a string `Key`. */
+function isSection(value: unknown): boolean {
+    return isRecord(value) && typeof value.Key === 'string';
+}
+
+/** True when the action's `Result` is an object whose lists Skip reads are lists. */
+function isComposition(value: unknown): value is SkipFormComposition {
+    return isRecord(value)
+        && Array.isArray(value.Sections)
+        && Array.isArray(value.Related)
+        && Array.isArray(value.Contributions)
+        && Array.isArray(value.SlotsPresent);
+}
+
 /**
  * The open form, read out of the MJ app context snapshot at `appContext.AdditionalContext.Form`.
- * Absent far more often than present: the user has to be on a record form. A `Form` without
- * `Entity`, `Sections` and `FormChoice` is not usable and returns null as well.
+ * Absent far more often than present: the user has to be on a record form. The `Form` must have
+ * an `Entity` that is not blank, a `Sections` list whose entries each have a string `Key`, and a
+ * `FormChoice` whose `FullCustomForm` is a boolean; otherwise it returns null.
  */
 export function ExtractFormContext(data: Record<string, unknown> | undefined): SkipFormContext | null {
     const appContext = data?.appContext;
-    if (!appContext || typeof appContext !== 'object') return null;
-    const additional = (appContext as Record<string, unknown>).AdditionalContext;
-    if (!additional || typeof additional !== 'object') return null;
-    const form = (additional as Record<string, unknown>).Form;
-    if (!form || typeof form !== 'object') return null;
+    if (!isRecord(appContext)) return null;
+    const additional = appContext.AdditionalContext;
+    if (!isRecord(additional)) return null;
+    const form = additional.Form;
+    if (!isRecord(form)) return null;
 
-    const candidate = form as Record<string, unknown>;
-    if (typeof candidate.Entity !== 'string' || candidate.Entity.length === 0) return null;
-    if (!Array.isArray(candidate.Sections)) return null;
-    const choice = candidate.FormChoice;
-    if (!choice || typeof choice !== 'object') return null;
-    if (typeof (choice as Record<string, unknown>).FullCustomForm !== 'boolean') return null;
+    if (typeof form.Entity !== 'string' || form.Entity.trim() === '') return null;
+    if (!Array.isArray(form.Sections) || !form.Sections.every(isSection)) return null;
+    const choice = form.FormChoice;
+    if (!isRecord(choice) || typeof choice.FullCustomForm !== 'boolean') return null;
 
     return {
-        Entity: candidate.Entity,
-        RecordPrimaryKey: typeof candidate.RecordPrimaryKey === 'string' ? candidate.RecordPrimaryKey : null,
-        FormChoice: choice as SkipFormChoice,
-        Sections: candidate.Sections as SkipFormContextSection[],
+        Entity: form.Entity,
+        RecordPrimaryKey: typeof form.RecordPrimaryKey === 'string' ? form.RecordPrimaryKey : null,
+        FormChoice: form.FormChoice as SkipFormChoice,
+        Sections: form.Sections as SkipFormContextSection[],
     };
 }
 
 /**
- * The server's composition of an entity's form, or null when the action is not installed on
- * this MJ version, refuses, or fails. The caller still has the compact context in that case.
+ * The server's composition of an entity's form, or null when the action is not installed or not
+ * active on this MJ version, refuses, fails, or returns a `Result` without the composition lists.
+ * The caller still has the compact context in that case.
  */
 export async function LoadFormComposition(entityName: string, contextUser: UserInfo): Promise<SkipFormComposition | null> {
     try {
         const engine = ActionEngineServer.Instance;
         await engine.Config(false, contextUser);
-        const action = engine.Actions.find((a) => a.Name === COMPOSITION_ACTION_NAME);
-        if (!action) return null;
+        const action = engine.GetActionByName(COMPOSITION_ACTION_NAME);
+        if (!action || action.Status !== 'Active') return null;
 
         const result = await engine.RunAction({
             Action: action,
@@ -56,7 +77,9 @@ export async function LoadFormComposition(entityName: string, contextUser: UserI
             return null;
         }
         const value = result.Params?.find((p) => p.Name === 'Result')?.Value;
-        return value && typeof value === 'object' ? (value as SkipFormComposition) : null;
+        if (isComposition(value)) return value;
+        LogError(`[SkipProxyAgent] ${COMPOSITION_ACTION_NAME} returned a Result without the composition lists for ${entityName}`);
+        return null;
     } catch (e) {
         LogError(`[SkipProxyAgent] ${COMPOSITION_ACTION_NAME} threw for ${entityName}: ${e instanceof Error ? e.message : String(e)}`);
         return null;

@@ -2,13 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { runAction, actions } = vi.hoisted(() => ({
     runAction: vi.fn(),
-    actions: [] as Array<{ Name: string }>,
+    actions: [] as Array<{ Name: string; Status: string }>,
 }));
 vi.mock('@memberjunction/actions', () => ({
     ActionEngineServer: {
         Instance: {
             Config: vi.fn().mockResolvedValue(undefined),
-            get Actions() { return actions; },
+            GetActionByName: (name: string) =>
+                actions.find((a) => a.Name.trim().toLowerCase() === name.trim().toLowerCase()),
             RunAction: runAction,
         },
     },
@@ -29,6 +30,7 @@ const composition = {
     Related: [], Contributions: [], SlotsPresent: ['after-fields'], ChromeRuleCount: 0, Note: '',
 };
 const data = (f: unknown) => ({ appContext: { App: { Name: 'Explorer' }, AdditionalContext: { Form: f } } });
+const activeAction = { Name: 'Get Form Composition For Entity', Status: 'Active' };
 
 beforeEach(() => { runAction.mockReset(); actions.length = 0; });
 
@@ -49,6 +51,11 @@ describe('ExtractFormContext', () => {
         expect(ExtractFormContext(data(noChoice))).toBeNull();
         expect(ExtractFormContext(data('MJ: Users'))).toBeNull();
     });
+    it('rejects a blank Entity and a section without a string Key', () => {
+        expect(ExtractFormContext(data({ ...form, Entity: '  ' }))).toBeNull();
+        const noKey = { Title: 'Details', Variant: 'default', Hidden: false, ContributionKey: null };
+        expect(ExtractFormContext(data({ ...form, Sections: [noKey] }))).toBeNull();
+    });
     it('reads a null RecordPrimaryKey for an unsaved record', () => {
         expect(ExtractFormContext(data({ ...form, RecordPrimaryKey: null }))?.RecordPrimaryKey).toBeNull();
     });
@@ -60,7 +67,7 @@ describe('LoadFormComposition', () => {
         expect(runAction).not.toHaveBeenCalled();
     });
     it('runs the action as the user and returns its Result param', async () => {
-        actions.push({ Name: 'Get Form Composition For Entity' });
+        actions.push(activeAction);
         runAction.mockResolvedValue({ Success: true, Params: [{ Name: 'Result', Value: composition, Type: 'Output' }] });
         expect(await LoadFormComposition('MJ: Users', user)).toEqual(composition);
         const params = runAction.mock.calls[0][0];
@@ -68,17 +75,30 @@ describe('LoadFormComposition', () => {
         expect(params.Params).toEqual([{ Name: 'EntityName', Value: 'MJ: Users', Type: 'Input' }]);
     });
     it('returns null when the action fails or throws', async () => {
-        actions.push({ Name: 'Get Form Composition For Entity' });
+        actions.push(activeAction);
         runAction.mockResolvedValue({ Success: false, Message: 'QUERY_FAILED' });
         expect(await LoadFormComposition('MJ: Users', user)).toBeNull();
         runAction.mockRejectedValue(new Error('boom'));
+        expect(await LoadFormComposition('MJ: Users', user)).toBeNull();
+    });
+    it('returns null for an inactive action without running it', async () => {
+        actions.push({ ...activeAction, Status: 'Disabled' });
+        expect(await LoadFormComposition('MJ: Users', user)).toBeNull();
+        expect(runAction).not.toHaveBeenCalled();
+    });
+    it('returns null when the Result is not a composition', async () => {
+        actions.push(activeAction);
+        runAction.mockResolvedValue({ Success: true, Params: [{ Name: 'Result', Value: [composition], Type: 'Output' }] });
+        expect(await LoadFormComposition('MJ: Users', user)).toBeNull();
+        const { Related: _r, ...noRelated } = composition;
+        runAction.mockResolvedValue({ Success: true, Params: [{ Name: 'Result', Value: noRelated, Type: 'Output' }] });
         expect(await LoadFormComposition('MJ: Users', user)).toBeNull();
     });
 });
 
 describe('BuildFormContext', () => {
     it('attaches the composition when it loads', async () => {
-        actions.push({ Name: 'Get Form Composition For Entity' });
+        actions.push(activeAction);
         runAction.mockResolvedValue({ Success: true, Params: [{ Name: 'Result', Value: composition, Type: 'Output' }] });
         expect(await BuildFormContext(data(form), user)).toEqual({ ...form, Composition: composition });
     });
@@ -86,7 +106,7 @@ describe('BuildFormContext', () => {
         expect(await BuildFormContext(data(form), user)).toEqual(form);
     });
     it('does not load a composition for a full custom form', async () => {
-        actions.push({ Name: 'Get Form Composition For Entity' });
+        actions.push(activeAction);
         const custom = { ...form, FormChoice: { FullCustomForm: true, OverrideID: 'o1', Label: 'Custom' } };
         expect(await BuildFormContext(data(custom), user)).toEqual(custom);
         expect(runAction).not.toHaveBeenCalled();
