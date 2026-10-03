@@ -48,7 +48,6 @@ import { AIEngine } from '@memberjunction/aiengine';
 import { CopyScalarsAndArrays, UUIDsEqual } from '@memberjunction/global';
 import mssql from 'mssql';
 import { BehaviorSubject } from 'rxjs';
-import { take } from 'rxjs/operators';
 
 /** This package's version, sent to Skip as `skipSDKVersion`. */
 const SKIP_SDK_VERSION: string = createRequire(import.meta.url)('../package.json').version;
@@ -294,15 +293,23 @@ export class SkipSDK {
      */
     private static readonly MAX_DISTINCT_FIELD_VALUES = 500;
 
-    // Static cache for Skip entities (shared across all instances)
+    /**
+     * Static cache for Skip entities, shared across all instances and held for the life of the
+     * process. There is deliberately NO time-based expiry — see {@link buildEntities}.
+     */
     private static __skipEntitiesCache$: BehaviorSubject<Promise<EntityInfo[]> | null> = new BehaviorSubject<Promise<EntityInfo[]> | null>(null);
+
+    /**
+     * When the cached payload last finished building. No longer drives expiry — it is read only
+     * to report the gap between builds in the build log, which is how an unexpected rebuild
+     * (a stray invalidation or `forceEntityRefresh`) gets spotted in a host's log.
+     */
     private static __lastRefreshTime: number = 0;
 
     /**
-     * In-flight entity refresh, shared across all instances. `__lastRefreshTime`
-     * only advances when a refresh COMPLETES, so without this every concurrent
-     * cold call would see an expired cache and launch its own full refresh
-     * (per-field SELECT DISTINCT sweeps) — a cold-start thundering herd.
+     * In-flight entity build, shared across all instances. Without it, every concurrent cold
+     * call would launch its own full build (per-field SELECT DISTINCT sweeps) — a cold-start
+     * thundering herd.
      */
     private static __refreshInFlight: Promise<EntityInfo[]> | null = null;
 
@@ -674,37 +681,76 @@ export class SkipSDK {
     }
 
     /**
-     * Build entity metadata for Skip
-     * Copied from AskSkipResolver.BuildSkipEntities - uses cached metadata with refresh logic
+     * Builds the entity metadata payload Skip receives, memoised for the life of the process.
+     *
+     * **Why there is no time-based expiry.** This is not a cheap read of the global provider's
+     * metadata — {@link buildEntityForSkip} reconstructs the whole graph (`toJSON()` per entity
+     * and per field, then `new EntityInfo(...)`) and {@link packFieldValues} runs a
+     * `SELECT DISTINCT` per eligible field. On a large client (~1,750 entities / ~20,169 fields)
+     * that is a second full copy of the catalog plus a wide sweep of the database, and the
+     * previous 15-minute expiry made every hour of traffic pay for it roughly four times.
+     *
+     * Metadata changes rarely, and when it does the host almost always restarts or refreshes
+     * deliberately — so expiry belongs on that event, not on a clock. Hosts that need it
+     * without a restart call {@link InvalidateEntitiesCache}.
+     *
+     * `forceRefresh` remains available as a per-call override.
+     *
+     * Originally copied from AskSkipResolver.BuildSkipEntities.
      */
-    private async buildEntities(forceRefresh: boolean, refreshIntervalMinutes: number = 15): Promise<EntityInfo[]> {
+    private async buildEntities(forceRefresh: boolean): Promise<EntityInfo[]> {
         try {
-            const now = Date.now();
-            const cacheExpired = (now - SkipSDK.__lastRefreshTime) > (refreshIntervalMinutes * 60 * 1000);
-
-            // If force refresh is requested OR cache expired OR cache is empty, refresh
-            if (forceRefresh || cacheExpired || SkipSDK.__skipEntitiesCache$.value === null) {
-                if (SkipSDK.__refreshInFlight) {
-                    // A refresh is already running — piggyback on it rather than
-                    // launching another full per-field distinct-value sweep.
-                    LogStatus('[SkipSDK] Skip entities refresh already in flight — awaiting it');
-                }
-                else {
-                    LogStatus(`[SkipSDK] Refreshing Skip entities cache (force: ${forceRefresh}, expired: ${cacheExpired})`);
-                    const newData = this.refreshSkipEntities().finally(() => {
-                        SkipSDK.__refreshInFlight = null;
-                    });
-                    SkipSDK.__refreshInFlight = newData;
-                    SkipSDK.__skipEntitiesCache$.next(newData);
-                }
+            const cached = SkipSDK.__skipEntitiesCache$.value;
+            if (!forceRefresh && cached !== null) {
+                return cached;
             }
 
-            return SkipSDK.__skipEntitiesCache$.pipe(take(1)).toPromise();
+            // A build is already running — await THAT promise rather than launching a second
+            // full per-field distinct-value sweep. Returned directly rather than read back out
+            // of the subject: `InvalidateEntitiesCache()` sets the subject to null, so a reader
+            // arriving between an invalidation and the next build would otherwise get `null`.
+            if (SkipSDK.__refreshInFlight) {
+                LogStatus('[SkipSDK] Skip entities build already in flight — awaiting it');
+                return SkipSDK.__refreshInFlight;
+            }
+
+            // Report the gap since the last build. With expiry gone this should read "first
+            // build" once per process; anything else means something is invalidating or forcing,
+            // and this line is what identifies it in a host's log.
+            const sinceLast = SkipSDK.__lastRefreshTime === 0
+                ? 'first build this process'
+                : `${Math.round((Date.now() - SkipSDK.__lastRefreshTime) / 1000)}s since last build`;
+            LogStatus(`[SkipSDK] Building Skip entities cache (force: ${forceRefresh}, ${sinceLast})`);
+            const newData = this.refreshSkipEntities().finally(() => {
+                SkipSDK.__refreshInFlight = null;
+            });
+            SkipSDK.__refreshInFlight = newData;
+            SkipSDK.__skipEntitiesCache$.next(newData);
+            return newData;
         }
         catch (e) {
             LogError(`[SkipSDK] buildEntities error: ${e}`);
             return [];
         }
+    }
+
+    /**
+     * Discards the cached entity payload so the next request rebuilds it.
+     *
+     * This is what replaces the former 15-minute wall-clock expiry. Hosts that need to pick up
+     * metadata changes without a restart should call this from wherever they already refresh
+     * metadata — MJAPI, for instance, refreshes on a deliberate signal
+     * (`METADATA_REFRESH_SIGNAL`), which is the natural place. That makes re-enrichment an
+     * event, paid when metadata actually changes, instead of a timer every deployment paid for
+     * whether anything changed or not.
+     *
+     * A build already in flight is left to finish; this only clears the cached result, so the
+     * following request starts a fresh build.
+     */
+    public static InvalidateEntitiesCache(): void {
+        SkipSDK.__skipEntitiesCache$.next(null);
+        SkipSDK.__lastRefreshTime = 0;
+        LogStatus('[SkipSDK] Skip entities cache invalidated — the next request will rebuild it');
     }
 
     /**
