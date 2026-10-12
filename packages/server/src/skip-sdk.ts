@@ -437,6 +437,13 @@ export class SkipSDK {
                 LogError(`[SkipSDK] Skip API error: ${skipError}` +
                     (detail ? ` [${detail.type}/${detail.code}]` : ''));
 
+                // Skip stopped the request at its time limit. Never retried automatically: the
+                // same request would very likely run out of time again. The user-facing
+                // explanation is in the response's system message.
+                if (detail?.code === SkipErrorCode.request_timeout) {
+                    LogStatus('[SkipSDK] Skip request timed out; not retrying');
+                }
+
                 // Handle callback key re-provisioning: if Skip reports the callback
                 // key is invalid and suggests re-provisioning, reset the provisioner
                 // state and retry exactly once. The retry flag on options prevents
