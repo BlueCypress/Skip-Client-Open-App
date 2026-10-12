@@ -32,6 +32,8 @@ export const SkipErrorType = {
     server_unreachable: 'server_unreachable',
     /** Query generation or execution failure */
     query: 'query',
+    /** The request ran past Skip's time limit and was stopped */
+    timeout: 'timeout',
     /** Unclassified error */
     unknown: 'unknown',
 } as const;
@@ -94,6 +96,13 @@ export const SkipErrorCode = {
     invalid_sql: 'invalid_sql',
     /** Query returned no results */
     empty_result: 'empty_result',
+
+    // ── timeout ─────────────────────────────────────────────────────────
+    /**
+     * Skip stopped the request because it exceeded its processing time limit or its maximum
+     * age. Retrying the same request will usually time out again; narrow it first.
+     */
+    request_timeout: 'request_timeout',
 
     // ── unknown ─────────────────────────────────────────────────────────
     /** Catch-all for unclassified errors */
