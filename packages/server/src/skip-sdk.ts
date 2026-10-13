@@ -36,7 +36,9 @@ import { MJConversationDetailEntity, QueryEngine } from '@memberjunction/core-en
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { gzip as gzipCompress, createGunzip } from 'zlib';
-import { getSkipConfig, getDbType, resolveSkipApiKey } from '@askskip/core';
+import { getSkipConfig, getDbType, resolveSkipApiKey, DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS } from '@askskip/core';
+import type { Agent } from 'undici';
+import { getEvalDispatcher, describeEvalError } from './eval-transport.js';
 import {
     getSkipCallbackKey,
     resetCallbackKeyProvisioning,
@@ -1521,11 +1523,13 @@ export class SkipSDK {
      *
      * Builds the same entity/query/auth context as chat(), but sends to the
      * /eval/run-agent endpoint with eval-specific fields (fixture, optimal, scoring).
-     * Uses a standard JSON request/response (no SSE streaming).
+     * Uses a standard JSON request/response (no SSE streaming). The request may wait up to
+     * `evalRunAgentTimeoutMs` (skip.config.cjs) for the response.
      */
     async evalRunAgent(options: SkipEvalOptions): Promise<SkipEvalResult> {
         const evalUrl = this.getEvalUrl('run-agent');
-        LogStatus(`[SkipSDK] Sending eval run to: ${evalUrl}`);
+        const timeoutMs = getSkipConfig().evalRunAgentTimeoutMs ?? DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS;
+        LogStatus(`[SkipSDK] Sending eval run to: ${evalUrl} (timeout ${Math.round(timeoutMs / 1000)} s)`);
 
         try {
             if (options.provider) {
@@ -1565,7 +1569,9 @@ export class SkipSDK {
                 method: 'POST',
                 headers: this.buildHeaders(),
                 body: JSON.stringify(evalRequest),
-            });
+                signal: AbortSignal.timeout(timeoutMs),
+                dispatcher: getEvalDispatcher(timeoutMs),
+            } as RequestInit & { dispatcher: Agent });
 
             if (!response.ok) {
                 const text = await response.text();
@@ -1574,10 +1580,11 @@ export class SkipSDK {
 
             return await response.json() as SkipEvalResult;
         } catch (error) {
-            LogError(`[SkipSDK] Eval run error: ${error}`);
+            const message = describeEvalError(error, timeoutMs);
+            LogError(`[SkipSDK] Eval run error: ${message}`, null, error);
             return {
                 success: false,
-                error: error instanceof Error ? error.message : String(error),
+                error: message,
             };
         }
     }

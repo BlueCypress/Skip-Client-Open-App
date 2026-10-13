@@ -241,7 +241,26 @@ export interface SkipClientConfig {
      * @default false
      */
     enableEval?: boolean;
+    /**
+     * How long `/eval/run` waits for the Skip API's `/eval/run-agent` response, in
+     * milliseconds. Agent evals run the whole pipeline before responding, so a hard case
+     * can take well over five minutes.
+     *
+     * Without this, Node's fetch gives up after its 300 s default wait for response headers
+     * and the eval is reported as `fetch failed` while Skip is still working.
+     *
+     * Set in `skip.config.cjs`:
+     * ```js
+     * module.exports = { enableEval: true, evalRunAgentTimeoutMs: 15 * 60 * 1000 };
+     * ```
+     *
+     * @default 600000 (10 minutes)
+     */
+    evalRunAgentTimeoutMs?: number;
 }
+
+/** Default for {@link SkipClientConfig.evalRunAgentTimeoutMs}: 10 minutes. */
+export const DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Default entity-filtering config. Excludes internal MJ metadata schemas while
@@ -347,6 +366,26 @@ function resolveEntitiesToSend(cfg: Record<string, unknown> | null): SkipEntitie
 }
 
 /**
+ * Extracts `evalRunAgentTimeoutMs` from the loaded config, falling back to
+ * {@link DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS} when it is absent or not a positive number.
+ * An invalid value is logged rather than thrown: boot paths must survive a bad config.
+ */
+export function resolveEvalRunAgentTimeoutMs(cfg: Record<string, unknown> | null): number {
+    const value = cfg?.evalRunAgentTimeoutMs;
+    if (value === undefined || value === null) {
+        return DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS;
+    }
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+        return value;
+    }
+    LogError(
+        `[skip-config] evalRunAgentTimeoutMs must be a positive number of milliseconds; got ${JSON.stringify(value)}. ` +
+        `Using the default of ${DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS} ms.`,
+    );
+    return DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS;
+}
+
+/**
  * Reads Skip client configuration from environment variables and skip.config.cjs.
  */
 export function getSkipConfig(): SkipClientConfig {
@@ -363,6 +402,7 @@ export function getSkipConfig(): SkipClientConfig {
         graphqlRootPath: process.env.GRAPHQL_ROOT_PATH ?? '/',
         entitiesToSend: resolveEntitiesToSend(fileCfg),
         enableEval: fileCfg?.enableEval === true,
+        evalRunAgentTimeoutMs: resolveEvalRunAgentTimeoutMs(fileCfg),
     };
 }
 

@@ -32,7 +32,8 @@
   "dependencies": {
     "@askskip/core": "0.3.4",
     "@askskip/types": "0.3.4",
-    "mssql": "^11.0.1"
+    "mssql": "^11.0.1",
+    "undici": "^7.30.0"
   },
   "peerDependencies": {
     "@memberjunction/ai": "^6.1.4",
