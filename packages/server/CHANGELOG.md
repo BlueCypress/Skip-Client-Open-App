@@ -1,5 +1,56 @@
 # @askskip/server
 
+## 0.3.5
+
+### Patch Changes
+
+- 0222de8: Make the agent eval timeout configurable, and stop it failing at 300 seconds.
+
+  - `@askskip/core`:
+    - New `evalRunAgentTimeoutMs` in `skip.config.cjs`. It defaults to 10 minutes; a value that is not a positive number is logged and replaced with the default.
+    - New exports: `DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS` and `resolveEvalRunAgentTimeoutMs()`.
+  - `@askskip/server`:
+    - `SkipSDK.evalRunAgent()` sends its request with a dispatcher whose header and body timeouts match that value, plus an `AbortSignal` with the same limit.
+    - Before this, Node's fetch gave up after its 300-second wait for response headers, and long agent evals were reported as `fetch failed` while Skip was still running them.
+    - A timeout now returns an error that names the limit and the setting.
+    - Adds `undici` as a dependency.
+
+- ecf7efb: Add a structured error for requests Skip stops at its time limit.
+
+  - `@askskip/types`: `SkipErrorType.timeout` and `SkipErrorCode.request_timeout`. Skip sends these when a request exceeds its processing time limit or its maximum age, instead of `unknown` / `execution_failed`, so clients can recognize a timeout without parsing the message.
+  - `@askskip/server`: `SkipSDK` recognizes `request_timeout`, logs it as a timeout, and does not retry it automatically — the same request would very likely run out of time again. The user-facing explanation still comes from the response's system message.
+
+- 72d9267: Build the Skip entity payload once per process, refresh it when entity scope changes at runtime, and stop querying the database for field values.
+
+  **No more 15-minute rebuild.** The entity payload is a projection of MJ metadata. Everything in it
+  except scope comes from CodeGen: descriptions, organic keys and value lists. A schema change means
+  CodeGen and an MJAPI restart, and the restart clears the cache. The old wall-clock expiry made a
+  busy server rebuild a full copy of the catalog roughly four times an hour, for changes that cannot
+  happen without a restart.
+
+  **Runtime scope changes still reach Skip.** The SDK subscribes to the MJGlobal event stream for
+  saves, deletes and remote invalidations of `MJ: Entities` and `MJ: Entity Fields` rows, the
+  records that hold entity and field `ScopeDefault`. MJ refreshes its own metadata on a debounce
+  after such a write. The SDK therefore rebuilds once the provider has swapped in its refreshed
+  metadata, not on the event itself, which would rebuild from the old metadata. Hosts need no
+  wiring. `SkipSDK.InvalidateEntitiesCache()` and the per-call `forceEntityRefresh` remain as manual
+  levers.
+
+  **Field values come from metadata only.** The SDK no longer runs a `SELECT DISTINCT` per field or
+  reads the legacy `ValuesToPackWithSchema` setting. Each field's `EntityFieldValues` are sent as
+  CodeGen maintains them, parsed from CHECK constraints or taken from value lists in
+  `additionalSchemaInfo`. This removes the database sweep from every build. Each value's own `Code`
+  is now sent instead of a copy of its `Value`. Fields that previously got data-sampled values (`All`
+  or `ListOrUserEntry`) now carry only their declared values.
+
+  The build is now synchronous and in memory. A build that throws, or that runs before the provider
+  has loaded any metadata, is not cached and is retried on the next request.
+
+- Updated dependencies [0222de8]
+- Updated dependencies [ecf7efb]
+  - @askskip/types@0.3.5
+  - @askskip/core@0.3.5
+
 ## 0.3.4
 
 ### Patch Changes
