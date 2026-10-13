@@ -1,22 +1,29 @@
 ---
-"@askskip/server": minor
+"@askskip/server": patch
 ---
 
-Hold the Skip entity-metadata cache for the life of the process instead of expiring it every 15 minutes.
+Build the Skip entity payload once per process, refresh it when entity scope changes at runtime, and stop querying the database for field values.
 
-Building the payload is not a cheap read of the global provider's metadata: `buildEntityForSkip`
-reconstructs the whole graph (`toJSON()` per entity and per field, then `new EntityInfo(...)`) and
-`packFieldValues` runs a `SELECT DISTINCT` per eligible field. On a large client (~1,750 entities /
-~20,169 fields) that is a second full copy of the catalog plus a wide sweep of the database, and
-the former wall-clock expiry made every hour of active traffic pay for it roughly four times.
-Metadata changes rarely, and when it does the host normally restarts or refreshes deliberately, so
-re-enrichment now belongs to that event rather than to a timer.
+**No more 15-minute rebuild.** The entity payload is a projection of MJ metadata. Everything in it
+except scope comes from CodeGen: descriptions, organic keys and value lists. A schema change means
+CodeGen and an MJAPI restart, and the restart clears the cache. The old wall-clock expiry made a
+busy server rebuild a full copy of the catalog roughly four times an hour, for changes that cannot
+happen without a restart.
 
-**Behaviour change for hosts.** A long-running server no longer picks up entity-metadata changes
-on its own. To refresh without a restart, call the new `SkipSDK.InvalidateEntitiesCache()` from
-wherever metadata is already refreshed — in MJAPI that is the deliberate `METADATA_REFRESH_SIGNAL`
-handler. The per-call `forceEntityRefresh` option is unchanged.
+**Runtime scope changes still reach Skip.** The SDK subscribes to the MJGlobal event stream for
+saves, deletes and remote invalidations of `MJ: Entities` and `MJ: Entity Fields` rows, the
+records that hold entity and field `ScopeDefault`. MJ refreshes its own metadata on a debounce
+after such a write. The SDK therefore rebuilds once the provider has swapped in its refreshed
+metadata, not on the event itself, which would rebuild from the old metadata. Hosts need no
+wiring. `SkipSDK.InvalidateEntitiesCache()` and the per-call `forceEntityRefresh` remain as manual
+levers.
 
-Also hardened the in-flight path: a concurrent caller now awaits the running build directly rather
-than reading it back out of the cache subject, which would otherwise hand back `null` to anyone
-arriving between an invalidation and the next build.
+**Field values come from metadata only.** The SDK no longer runs a `SELECT DISTINCT` per field or
+reads the legacy `ValuesToPackWithSchema` setting. Each field's `EntityFieldValues` are sent as
+CodeGen maintains them, parsed from CHECK constraints or taken from value lists in
+`additionalSchemaInfo`. This removes the database sweep from every build. Each value's own `Code`
+is now sent instead of a copy of its `Value`. Fields that previously got data-sampled values (`All`
+or `ListOrUserEntry`) now carry only their declared values.
+
+The build is now synchronous and in memory. A build that throws, or that runs before the provider
+has loaded any metadata, is not cached and is retried on the next request.
