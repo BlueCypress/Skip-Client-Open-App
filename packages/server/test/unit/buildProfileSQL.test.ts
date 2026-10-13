@@ -238,8 +238,8 @@ describe('buildProfileSQL — shapes where ExtractCTEs falls back to regex', () 
  * The invariant that replaced R2/R3.
  *
  * Literal-value disclosure was removed entirely once MJ's own `EntityFieldValue`
- * path (CHECK constraints + DBAutoDoc enum detection, shipped to Skip by
- * `SkipSDK.packFieldValues`) was found to answer the same question better. With
+ * path (CHECK constraints + DBAutoDoc enum detection, shipped to Skip with each
+ * field) was found to answer the same question better. With
  * the domain pass gone there is no code path by which a row value can reach the
  * response, so this asserts the property directly rather than trusting that the
  * gates which used to enforce it are still correct.

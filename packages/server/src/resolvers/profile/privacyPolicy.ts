@@ -18,10 +18,10 @@
  * That pass has been removed, because MJ already answers the same question by a
  * better route. `__mj.EntityFieldValue` is populated from CHECK constraints
  * (parsed by CodeGen, authoritative) and from DBAutoDoc's LLM enum detection,
- * and `SkipSDK.packFieldValues` ships those values — plus, for
- * `ValuesToPackWithSchema='All'` and `ValueListType='ListOrUserEntry'`, a live
- * `SELECT DISTINCT` — into every Skip request payload. The Query Writer prompt
- * already instructs the model to read them.
+ * and the SDK ships those values with each field in every Skip request payload.
+ * (It no longer adds a live `SELECT DISTINCT` on top, so row values do not
+ * leave the database by that route either.) The Query Writer prompt already
+ * instructs the model to read them.
  *
  * Metadata is also the *better* answer, not merely the cheaper one. It describes
  * the column's full domain, whereas the profile could only report values that

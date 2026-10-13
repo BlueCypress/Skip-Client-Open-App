@@ -37,7 +37,7 @@
  * low-cardinality columns, fenced by a k-anonymity floor and a sensitivity
  * deny-list. It was removed: MJ already answers that question better via
  * `__mj.EntityFieldValue` (CHECK constraints + DBAutoDoc enum detection), which
- * `SkipSDK.packFieldValues` ships in every request payload. Deleting it removed
+ * the SDK ships with each field in every request payload. Deleting it removed
  * the feature's entire disclosure surface along with its cost.
  *
  * The caller never sends a column list. The resolver derives it from the result

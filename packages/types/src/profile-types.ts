@@ -53,7 +53,7 @@ export interface QueryDependencySpecInput {
  *
  * Literal column values are absent too, and deliberately: MJ already supplies a
  * column's possible values through `__mj.EntityFieldValue` (CHECK constraints
- * plus DBAutoDoc enum detection), which `SkipSDK.packFieldValues` ships in every
+ * plus DBAutoDoc enum detection), which the SDK ships with each field in every
  * Skip request payload. Every field below is a count, a ratio or a numeric
  * bound, so a profile cannot disclose a row value.
  */

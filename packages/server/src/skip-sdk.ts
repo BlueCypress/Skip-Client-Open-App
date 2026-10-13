@@ -31,7 +31,7 @@ import { createRequire } from 'node:module';
 import { isValidUUID, requireValidUUID } from './uuid-guard.js';
 import { noteBrainContact } from './registry-reconciler.js';
 import { DataContext } from '@memberjunction/data-context';
-import { IMetadataProvider, UserInfo, LogStatus, LogError, Metadata, RunQuery, RunView, EntityInfo, EntityFieldInfo, EntityFieldValueInfo, DatabaseProviderBase } from '@memberjunction/core';
+import { IMetadataProvider, UserInfo, LogStatus, LogError, Metadata, RunQuery, RunView, EntityInfo, BaseEntity, BaseEntityEvent, AllMetadata } from '@memberjunction/core';
 import { MJConversationDetailEntity, QueryEngine } from '@memberjunction/core-entities';
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
@@ -45,10 +45,18 @@ import {
 } from './skip-callback-key-provisioner.js';
 import { GetAIAPIKey } from '@memberjunction/ai';
 import { AIEngine } from '@memberjunction/aiengine';
-import { CopyScalarsAndArrays, UUIDsEqual } from '@memberjunction/global';
+import { CopyScalarsAndArrays, UUIDsEqual, MJGlobal, MJEvent, MJEventType } from '@memberjunction/global';
 import mssql from 'mssql';
-import { BehaviorSubject } from 'rxjs';
-import { take } from 'rxjs/operators';
+
+/** What one entity build produced, and whether it is safe to keep. */
+interface EntityBuildResult {
+    entities: EntityInfo[];
+    /** False when the build threw or the provider had no metadata loaded yet. */
+    cacheable: boolean;
+}
+
+/** The MJGlobal event stream, as returned by `MJGlobal.Instance.GetEventListener()`. */
+type MJEventStream = ReturnType<MJGlobal['GetEventListener']>;
 
 /** This package's version, sent to Skip as `skipSDKVersion`. */
 const SKIP_SDK_VERSION: string = createRequire(import.meta.url)('../package.json').version;
@@ -280,8 +288,8 @@ export class SkipSDK {
     public get Provider(): IMetadataProvider {
         // NOTE: `Metadata.Provider` (static) is the provider. A `Metadata` *instance*
         // is only a facade over it and has no ExecuteSQL/RunView surface — returning
-        // one here (behind an `as unknown as` cast) is what made every
-        // getFieldDistinctValues() call fail with "provider.ExecuteSQL is not a function".
+        // one here (behind an `as unknown as` cast) once made every direct SQL call
+        // fail with "provider.ExecuteSQL is not a function".
         return this.config.provider ?? Metadata.Provider;
     }
     public set Provider(value: IMetadataProvider | null) {
@@ -289,22 +297,42 @@ export class SkipSDK {
     }
 
     /**
-     * Upper bound on distinct values fetched per field for schema enrichment.
-     * See {@link buildDistinctValuesSQL} for why this is capped.
+     * The entity payload sent to Skip, shared across all instances and built from the process's
+     * metadata. There is NO wall-clock expiry — see {@link buildEntities} for what retires it.
      */
-    private static readonly MAX_DISTINCT_FIELD_VALUES = 500;
+    private static __entityCache: EntityInfo[] | null = null;
 
-    // Static cache for Skip entities (shared across all instances)
-    private static __skipEntitiesCache$: BehaviorSubject<Promise<EntityInfo[]> | null> = new BehaviorSubject<Promise<EntityInfo[]> | null>(null);
+    /**
+     * When the payload was last built. Read only to report the gap between builds in the build
+     * log, which is how an unexpected rebuild gets spotted in a host's log.
+     */
     private static __lastRefreshTime: number = 0;
 
     /**
-     * In-flight entity refresh, shared across all instances. `__lastRefreshTime`
-     * only advances when a refresh COMPLETES, so without this every concurrent
-     * cold call would see an expired cache and launch its own full refresh
-     * (per-field SELECT DISTINCT sweeps) — a cold-start thundering herd.
+     * Metadata entities (lowercased) whose runtime writes change what {@link buildEntities}
+     * produces: entity and field `ScopeDefault` decide which entities and fields Skip sees.
+     * Everything else in the payload — descriptions, organic keys, value lists — comes from
+     * CodeGen, which means a schema change and an MJAPI restart, and the restart clears this cache.
      */
-    private static __refreshInFlight: Promise<EntityInfo[]> | null = null;
+    private static readonly SCOPE_METADATA_ENTITIES: ReadonlySet<string> = new Set(['mj: entities', 'mj: entity fields']);
+
+    /**
+     * The MJGlobal event stream currently subscribed to. Compared by identity, not a boolean,
+     * because `MJGlobal.Reset()` replaces the stream — the same pattern MJ's ProviderBase uses.
+     */
+    private static __wiredEventStream: MJEventStream | null = null;
+
+    /** The live subscription, kept so a stream swap can unsubscribe the stale one. */
+    private static __eventSubscription: ReturnType<MJEventStream['subscribe']> | null = null;
+
+    /**
+     * Set when a write to a {@link SCOPE_METADATA_ENTITIES} row is seen, holding the global
+     * provider's `AllMetadata` at that moment. MJ refreshes its metadata on a debounce AFTER the
+     * write, so clearing the cache on the event itself would let a request in between rebuild
+     * from — and keep — the old metadata. The cache is cleared once the provider has swapped in a
+     * new `AllMetadata` (see {@link applyPendingScopeChange}).
+     */
+    private static __pendingScopeChange: { metadataAtWrite: AllMetadata | undefined } | null = null;
 
     /** Ensures the resolved callback URL is logged only once per process. */
     private static __callbackURLLogged = false;
@@ -613,7 +641,7 @@ export class SkipSDK {
         includeCallbackAuth: boolean,
         additionalTokenInfo: any = {}
     ): Promise<Partial<SkipAPIRequest>> {
-        const entities = includeEntities ? await this.buildEntities(forceEntityRefresh) : [];
+        const entities = includeEntities ? this.buildEntities(forceEntityRefresh) : [];
         const queries = includeQueries ? this.buildQueries() : [];
         // Always build the lightweight query catalog for collision detection,
         // regardless of whether full queries are included
@@ -681,37 +709,113 @@ export class SkipSDK {
     }
 
     /**
-     * Build entity metadata for Skip
-     * Copied from AskSkipResolver.BuildSkipEntities - uses cached metadata with refresh logic
+     * Returns the entity metadata payload Skip receives, built once and reused.
+     *
+     * The build is a synchronous, in-memory projection of the provider's metadata — scope
+     * filtering plus a clone — with no database access, so concurrent callers can never observe a
+     * half-finished build. It is still not free on a large schema (a `toJSON()` copy per entity
+     * and per field), which is why it is not repeated on a timer.
+     *
+     * What retires the cached payload:
+     * - a runtime write to entity or field `ScopeDefault`, picked up from the MJGlobal event
+     *   stream once MJ has refreshed its metadata (see {@link handleMetadataEvent});
+     * - {@link InvalidateEntitiesCache};
+     * - a per-call `forceRefresh`.
+     * Schema changes need no handling here: they require CodeGen and an MJAPI restart.
+     *
+     * Originally copied from AskSkipResolver.BuildSkipEntities.
      */
-    private async buildEntities(forceRefresh: boolean, refreshIntervalMinutes: number = 15): Promise<EntityInfo[]> {
-        try {
-            const now = Date.now();
-            const cacheExpired = (now - SkipSDK.__lastRefreshTime) > (refreshIntervalMinutes * 60 * 1000);
+    private buildEntities(forceRefresh: boolean): EntityInfo[] {
+        SkipSDK.ensureMetadataEventSubscription();
+        SkipSDK.applyPendingScopeChange();
 
-            // If force refresh is requested OR cache expired OR cache is empty, refresh
-            if (forceRefresh || cacheExpired || SkipSDK.__skipEntitiesCache$.value === null) {
-                if (SkipSDK.__refreshInFlight) {
-                    // A refresh is already running — piggyback on it rather than
-                    // launching another full per-field distinct-value sweep.
-                    LogStatus('[SkipSDK] Skip entities refresh already in flight — awaiting it');
-                }
-                else {
-                    LogStatus(`[SkipSDK] Refreshing Skip entities cache (force: ${forceRefresh}, expired: ${cacheExpired})`);
-                    const newData = this.refreshSkipEntities().finally(() => {
-                        SkipSDK.__refreshInFlight = null;
-                    });
-                    SkipSDK.__refreshInFlight = newData;
-                    SkipSDK.__skipEntitiesCache$.next(newData);
-                }
-            }
-
-            return SkipSDK.__skipEntitiesCache$.pipe(take(1)).toPromise();
+        const cached = SkipSDK.__entityCache;
+        if (cached && !forceRefresh) {
+            return cached;
         }
-        catch (e) {
-            LogError(`[SkipSDK] buildEntities error: ${e}`);
+        const provider = this.Provider;
+        if (!provider) {
+            LogError('[SkipSDK] No metadata provider is available — sending Skip no entities');
             return [];
         }
+
+        const sinceLast = SkipSDK.__lastRefreshTime === 0
+            ? 'first build this process'
+            : `${Math.round((Date.now() - SkipSDK.__lastRefreshTime) / 1000)}s since last build`;
+        LogStatus(`[SkipSDK] Building Skip entities cache (${cached ? 'forced refresh' : 'no cached payload'}, ${sinceLast})`);
+
+        const result = this.refreshSkipEntities(provider);
+        SkipSDK.__lastRefreshTime = Date.now();
+        SkipSDK.__entityCache = result.cacheable ? result.entities : null;
+        return result.entities;
+    }
+
+    /**
+     * Subscribes once per MJGlobal event stream to BaseEntity events, so runtime scope changes
+     * reach Skip without a restart. A failure here is logged, never thrown: losing automatic
+     * rebuilds must not fail the Skip request that happened to trigger the wiring.
+     */
+    private static ensureMetadataEventSubscription(): void {
+        try {
+            const stream = MJGlobal.Instance.GetEventListener(false);
+            if (SkipSDK.__wiredEventStream === stream) {
+                return;
+            }
+            // Assign before subscribing so a re-entrant call cannot double-subscribe.
+            SkipSDK.__eventSubscription?.unsubscribe();
+            SkipSDK.__wiredEventStream = stream;
+            SkipSDK.__eventSubscription = stream.subscribe((event) => SkipSDK.handleMetadataEvent(event));
+        }
+        catch (e) {
+            LogError(`[SkipSDK] Could not subscribe to MJGlobal events — scope changes will need an invalidation or restart to reach Skip: ${e}`);
+        }
+    }
+
+    /**
+     * Records a save, delete or remote invalidation (a write on another server) of an entity or
+     * entity field row. Mirrors the filter MJ's ProviderBase applies to the same stream when it
+     * schedules its own metadata refresh.
+     */
+    private static handleMetadataEvent(event: MJEvent): void {
+        if (event.event !== MJEventType.ComponentEvent || event.eventCode !== BaseEntity.BaseEventCode) {
+            return;
+        }
+        const entityEvent: BaseEntityEvent | undefined = event.args;
+        if (!entityEvent || (entityEvent.type !== 'save' && entityEvent.type !== 'delete' && entityEvent.type !== 'remote-invalidate')) {
+            return;
+        }
+        const entityName = (entityEvent.baseEntity?.EntityInfo?.Name ?? entityEvent.entityName)?.trim().toLowerCase();
+        if (!entityName || !SkipSDK.SCOPE_METADATA_ENTITIES.has(entityName)) {
+            return;
+        }
+        // Always the latest write: if MJ already refreshed after an earlier write, the next
+        // request must wait for THIS write's refresh too.
+        SkipSDK.__pendingScopeChange = { metadataAtWrite: Metadata.Provider?.AllMetadata };
+        LogStatus(`[SkipSDK] ${entityEvent.type} on ${entityName} — Skip entities will rebuild once MJ refreshes its metadata`);
+    }
+
+    /**
+     * Clears the cached payload if a scope write is pending and MJ has since swapped in new
+     * metadata. Until then the old payload keeps matching what the provider itself is serving.
+     */
+    private static applyPendingScopeChange(): void {
+        const pending = SkipSDK.__pendingScopeChange;
+        if (!pending || Metadata.Provider?.AllMetadata === pending.metadataAtWrite) {
+            return;
+        }
+        SkipSDK.__pendingScopeChange = null;
+        SkipSDK.__entityCache = null;
+        LogStatus('[SkipSDK] MJ metadata refreshed after a scope change — rebuilding Skip entities');
+    }
+
+    /**
+     * Discards the cached entity payload so the next request rebuilds it. Runtime scope changes
+     * are already picked up from the MJGlobal event stream; this is the manual lever for anything
+     * else a host knows has changed.
+     */
+    public static InvalidateEntitiesCache(): void {
+        SkipSDK.__entityCache = null;
+        LogStatus('[SkipSDK] Skip entities cache invalidated — the next request will rebuild it');
     }
 
     /**
@@ -1286,50 +1390,26 @@ export class SkipSDK {
     }
 
     /**
-     * Refreshes the Skip entities cache
-     * Rebuilds the entity information that is provided to Skip
-     * Refreshes the entity metadata cache. Filters entities by schema/scope config,
-     * filters fields by AI scope, and enriches field values from the database.
-     * Returns EntityInfo objects directly — no intermediate Skip-specific types needed.
+     * Rebuilds the entity information that is provided to Skip. Filters entities by schema/scope
+     * config and fields by AI scope. Returns EntityInfo objects directly — no intermediate
+     * Skip-specific types needed.
+     *
+     * Never throws. A result is not cacheable when the build threw, or when the provider has no
+     * entity metadata yet (a request racing server boot) — keeping either would freeze an empty
+     * payload in place. An entity that fails to build is dropped and logged; that failure is
+     * deterministic, so retrying it on every request would only repeat the work.
      */
-    private async refreshSkipEntities(): Promise<EntityInfo[]> {
+    private refreshSkipEntities(provider: IMetadataProvider): EntityBuildResult {
         try {
-            const md = this.Provider;
-            const skipConfig = getSkipConfig();
-
-            // Diagnostic logging
-            LogStatus(`[SkipSDK.refreshSkipEntities] Total entities in metadata: ${md.Entities.length}`);
-            LogStatus(`[SkipSDK.refreshSkipEntities] Config excludeSchemas: ${JSON.stringify(skipConfig.entitiesToSend?.excludeSchemas)}`);
-            LogStatus(`[SkipSDK.refreshSkipEntities] Config includeEntitiesFromExcludedSchemas: ${JSON.stringify(skipConfig.entitiesToSend?.includeEntitiesFromExcludedSchemas)}`);
-
-            const skipSpecialIncludeEntities = (skipConfig.entitiesToSend?.includeEntitiesFromExcludedSchemas ?? [])
-                .map((e) => e.trim().toLowerCase());
-
-            // Get the list of entities
-            const entities = md.Entities.filter((e) => {
-                if (!(skipConfig.entitiesToSend?.excludeSchemas ?? []).includes(e.SchemaName) ||
-                    skipSpecialIncludeEntities.includes(e.Name.trim().toLowerCase())) {
-                    const sd = e.ScopeDefault?.trim();
-                    if (sd && sd.length > 0) {
-                        const scopes = sd.split(',').map((s) => s.trim().toLowerCase()) ?? ['all'];
-                        return !scopes || scopes.length === 0 || scopes.includes('all') || scopes.includes('ai') || skipSpecialIncludeEntities.includes(e.Name.trim().toLowerCase());
-                    }
-                    else {
-                        return true; // no scope, so include it
-                    }
-                }
-                return false;
-            });
-
-            LogStatus(`[SkipSDK.refreshSkipEntities] Filtered entities count: ${entities.length}`);
-            if (entities.length === 0) {
-                LogError(`[SkipSDK.refreshSkipEntities] WARNING: No entities passed filtering! This will result in empty Skip entities list.`);
+            if (provider.Entities.length === 0) {
+                LogError('[SkipSDK.refreshSkipEntities] The provider has no entity metadata loaded yet — not caching the empty result');
+                return { entities: [], cacheable: false };
             }
+            const entities = this.selectEntitiesForSkip(provider);
 
-            // Build enriched EntityInfo objects with filtered fields and packed values.
             // buildEntityForSkip returns null on failure — those must not reach the
             // cached payload, where they would serialize as literal nulls for Skip.
-            const built = await Promise.all(entities.map((e) => this.buildEntityForSkip(e)));
+            const built = entities.map((e) => this.buildEntityForSkip(e));
             const result = built.filter((entity): entity is EntityInfo => entity !== null);
             const droppedNames = entities.filter((_, i) => built[i] === null).map((e) => e.Name);
             if (droppedNames.length > 0) {
@@ -1337,163 +1417,81 @@ export class SkipSDK {
             }
 
             LogStatus(`[SkipSDK.refreshSkipEntities] Successfully packed ${result.length} entities for Skip`);
-
-            SkipSDK.__lastRefreshTime = Date.now();
-            return result;
+            return { entities: result, cacheable: true };
         }
         catch (e) {
             LogError(`[SkipSDK] refreshSkipEntities error: ${e}`);
-            return [];
+            return { entities: [], cacheable: false };
         }
     }
 
     /**
-     * Builds an EntityInfo object for Skip, filtering fields by AI scope and
-     * enriching field values from the database. Returns a new EntityInfo
-     * constructed from a plain object so it serializes cleanly via toJSON().
+     * Picks the entities Skip should see: those outside the configured excluded schemas (or
+     * explicitly re-included from them) whose scope includes AI.
      */
-    private async buildEntityForSkip(e: EntityInfo): Promise<EntityInfo | null> {
+    private selectEntitiesForSkip(md: IMetadataProvider): EntityInfo[] {
+        const skipConfig = getSkipConfig();
+
+        // Diagnostic logging
+        LogStatus(`[SkipSDK.refreshSkipEntities] Total entities in metadata: ${md.Entities.length}`);
+        LogStatus(`[SkipSDK.refreshSkipEntities] Config excludeSchemas: ${JSON.stringify(skipConfig.entitiesToSend?.excludeSchemas)}`);
+        LogStatus(`[SkipSDK.refreshSkipEntities] Config includeEntitiesFromExcludedSchemas: ${JSON.stringify(skipConfig.entitiesToSend?.includeEntitiesFromExcludedSchemas)}`);
+
+        const skipSpecialIncludeEntities = (skipConfig.entitiesToSend?.includeEntitiesFromExcludedSchemas ?? [])
+            .map((e) => e.trim().toLowerCase());
+
+        // Get the list of entities
+        const entities = md.Entities.filter((e) => {
+            if (!(skipConfig.entitiesToSend?.excludeSchemas ?? []).includes(e.SchemaName) ||
+                skipSpecialIncludeEntities.includes(e.Name.trim().toLowerCase())) {
+                const sd = e.ScopeDefault?.trim();
+                if (sd && sd.length > 0) {
+                    const scopes = sd.split(',').map((s) => s.trim().toLowerCase()) ?? ['all'];
+                    return !scopes || scopes.length === 0 || scopes.includes('all') || scopes.includes('ai') || skipSpecialIncludeEntities.includes(e.Name.trim().toLowerCase());
+                }
+                else {
+                    return true; // no scope, so include it
+                }
+            }
+            return false;
+        });
+
+        LogStatus(`[SkipSDK.refreshSkipEntities] Filtered entities count: ${entities.length}`);
+        if (entities.length === 0) {
+            LogError(`[SkipSDK.refreshSkipEntities] WARNING: No entities passed filtering! This will result in empty Skip entities list.`);
+        }
+        return entities;
+    }
+
+    /**
+     * Builds an EntityInfo object for Skip with only the fields visible to AI. Returns a new
+     * EntityInfo constructed from a plain object so it serializes cleanly via toJSON().
+     *
+     * Field values are the `EntityFieldValues` metadata as CodeGen maintains it — parsed from
+     * CHECK constraints, or from value lists in additionalSchemaInfo — and are passed through
+     * untouched. The SDK does not query the database for possible values.
+     */
+    private buildEntityForSkip(e: EntityInfo): EntityInfo | null {
         try {
             // Filter fields by scope (only include fields visible to AI)
-            const filteredFields = e.Fields.filter(f => {
-                const scopes = f.ScopeDefault?.split(',').map((s) => s.trim().toLowerCase());
-                return !scopes || scopes.length === 0 || scopes.includes('all') || scopes.includes('ai');
-            });
+            const fields = e.Fields
+                .filter((f) => {
+                    const scopes = f.ScopeDefault?.split(',').map((s) => s.trim().toLowerCase());
+                    return !scopes || scopes.length === 0 || scopes.includes('all') || scopes.includes('ai');
+                })
+                .map((f) => ({ ...f.toJSON(), EntityFieldValues: f.EntityFieldValues }));
 
-            // Enrich each field with packed possible values
-            const enrichedFields = await Promise.all(filteredFields.map(f => this.enrichFieldValues(f)));
-
-            // Clone the entity via toJSON, then swap in filtered+enriched fields and Skip-specific
+            // Clone the entity via toJSON, then swap in the filtered fields and Skip-specific
             // Active-only organic keys. Any future EntityInfo properties flow through automatically.
             return new EntityInfo({
                 ...e.toJSON(),
-                Fields: enrichedFields,
+                Fields: fields,
                 OrganicKeys: e.OrganicKeys.filter(ok => ok.Status === 'Active'),
             });
         }
         catch (err) {
             LogError(`[SkipSDK] buildEntityForSkip error: ${err}`);
             return null;
-        }
-    }
-
-    /**
-     * Enriches a field's EntityFieldValues with possible values from the database.
-     * Returns a plain object that can be used to construct an EntityFieldInfo.
-     */
-    private async enrichFieldValues(f: EntityFieldInfo): Promise<Record<string, unknown>> {
-        return {
-            ...f.toJSON(),
-            EntityFieldValues: await this.packFieldValues(f),
-        };
-    }
-
-    /**
-     * Packs possible values for an entity field based on the ValuesToPackWithSchema setting.
-     * Returns EntityFieldValueInfo-compatible objects.
-     */
-    private async packFieldValues(f: EntityFieldInfo): Promise<EntityFieldValueInfo[]> {
-        try {
-            if (f.ValuesToPackWithSchema === 'None') {
-                return [];
-            }
-            else if (f.ValuesToPackWithSchema === 'All') {
-                return await this.getFieldDistinctValues(f);
-            }
-            else if (f.ValuesToPackWithSchema === 'Auto') {
-                if (f.ValueListTypeEnum === 'List') {
-                    return f.EntityFieldValues.map((v) => new EntityFieldValueInfo({ Value: v.Value, Code: v.Value }));
-                }
-                else if (f.ValueListTypeEnum === 'ListOrUserEntry') {
-                    const fromEntityFieldValues = f.EntityFieldValues.map((v) => new EntityFieldValueInfo({ Value: v.Value, Code: v.Value }));
-                    const values = await this.getFieldDistinctValues(f);
-                    if (!values || values.length === 0) {
-                        return fromEntityFieldValues;
-                    }
-                    return this.dedupeFieldValues([...fromEntityFieldValues, ...values]);
-                }
-            }
-            return [];
-        }
-        catch (e) {
-            LogError(`[SkipSDK] packFieldValues error: ${e}`);
-            return [];
-        }
-    }
-
-    /**
-     * Dedupes field values by their Value string. Each entry is a freshly
-     * constructed object, so identity-based dedup (`new Set([...])`) never
-     * collapses anything — the value text is the real identity key. The first
-     * occurrence wins, so declared entity field values take precedence over
-     * database-derived duplicates.
-     */
-    private dedupeFieldValues(values: EntityFieldValueInfo[]): EntityFieldValueInfo[] {
-        const byValue = new Map<string, EntityFieldValueInfo>();
-        for (const v of values) {
-            const key = String(v.Value);
-            if (!byValue.has(key)) {
-                byValue.set(key, v);
-            }
-        }
-        return [...byValue.values()];
-    }
-
-    /**
-     * Builds the platform-specific `SELECT DISTINCT` used to enrich a field's
-     * possible values, with identifiers quoted and the row count capped.
-     *
-     * The cap matters: this runs for every eligible field on every entity cache
-     * refresh, and the result is serialized into each Skip request payload. An
-     * uncapped DISTINCT over a high-cardinality column on a large base view is
-     * both a slow query and a large payload, so a field with more than
-     * {@link MAX_DISTINCT_FIELD_VALUES} values is not usefully enumerable anyway.
-     */
-    private buildDistinctValuesSQL(f: EntityFieldInfo): string {
-        const limit = SkipSDK.MAX_DISTINCT_FIELD_VALUES;
-        if (getDbType() === 'postgresql') {
-            return `SELECT DISTINCT "${f.Name}" FROM "${f.SchemaName}"."${f.BaseView}" LIMIT ${limit}`;
-        }
-        return `SELECT DISTINCT TOP (${limit}) [${f.Name}] FROM [${f.SchemaName}].[${f.BaseView}]`;
-    }
-
-    /**
-     * Gets distinct values for a field from the database.
-     * Returns EntityFieldValueInfo objects.
-     */
-    private async getFieldDistinctValues(f: EntityFieldInfo): Promise<EntityFieldValueInfo[]> {
-        try {
-            // Use this SDK instance's bound provider so multi-tenant servers route the SQL
-            // through the right connection. ExecuteSQL works on both SQL Server and PostgreSQL,
-            // but it is declared on DatabaseProviderBase rather than IMetadataProvider — so
-            // narrow rather than cast. A provider without direct SQL support (e.g. a
-            // client-side GraphQL provider) is a real configuration state, not an error,
-            // but it must be visible instead of silently yielding empty value lists.
-            const provider = this.Provider;
-            if (!(provider instanceof DatabaseProviderBase)) {
-                LogError(
-                    `[SkipSDK] Provider (${provider?.constructor?.name ?? 'unknown'}) does not support ` +
-                    `direct SQL — skipping distinct value enrichment for ${f.SchemaName}.${f.BaseView}.${f.Name}. ` +
-                    'Skip will receive this field without its possible values.'
-                );
-                return [];
-            }
-
-            const rows = await provider.ExecuteSQL<Record<string, unknown>>(this.buildDistinctValuesSQL(f));
-            if (!rows || rows.length === 0) {
-                return [];
-            }
-            if (rows.length === SkipSDK.MAX_DISTINCT_FIELD_VALUES) {
-                LogStatus(
-                    `[SkipSDK] ${f.SchemaName}.${f.BaseView}.${f.Name} hit the ` +
-                    `${SkipSDK.MAX_DISTINCT_FIELD_VALUES}-value cap — the list sent to Skip is truncated.`
-                );
-            }
-            return rows.map((r) => new EntityFieldValueInfo({ Value: r[f.Name] as string, Code: r[f.Name] as string }));
-        }
-        catch (e) {
-            LogError(`[SkipSDK] getFieldDistinctValues error: ${e}`);
-            return [];
         }
     }
 
