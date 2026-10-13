@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
     SkipErrorCode,
+    SkipErrorType,
     SkipRetryAction,
     SkipErrorDetail,
     SkipResponsePhase,
@@ -317,6 +318,35 @@ describe('SkipSDK error handling', () => {
             const result = await sdk.chat(makeCallOptions());
 
             expect(result.success).toBe(false);
+            expect(mockResetCallbackKeyProvisioning).not.toHaveBeenCalled();
+        });
+
+        it('surfaces a request timeout without retrying', async () => {
+            const { sdk, setResponses, sendSSERequest } = createSdkWithMockedSSE();
+            const detail = buildErrorDetail({
+                type: SkipErrorType.timeout,
+                code: SkipErrorCode.request_timeout,
+                message: 'Request processing timed out after 20 minutes',
+                retryAction: SkipRetryAction.modify_and_retry,
+            });
+
+            setResponses([{
+                type: 'complete',
+                value: {
+                    success: false,
+                    errorDetail: detail,
+                    responsePhase: SkipResponsePhase.analysis_complete,
+                    messages: [],
+                },
+            }]);
+
+            const result = await sdk.chat(makeCallOptions());
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBe('Request processing timed out after 20 minutes');
+            expect(result.errorDetail!.code).toBe(SkipErrorCode.request_timeout);
+            expect(result.errorDetail!.type).toBe(SkipErrorType.timeout);
+            expect(sendSSERequest).toHaveBeenCalledTimes(1);
             expect(mockResetCallbackKeyProvisioning).not.toHaveBeenCalled();
         });
 

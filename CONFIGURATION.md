@@ -138,6 +138,29 @@ Specific entity names to include in the payload even if their schema is in `excl
 
 Add entities here when Skip needs visibility into MJ infrastructure entities for your use case. For example, if you want Skip to query Content Items or work with Tags/Lists, those must be included here since they live in the `__mj` schema.
 
+#### `evalRunAgentTimeoutMs`
+
+**Type:** `number` (milliseconds)
+**Default:** `600000` (10 minutes)
+
+This only matters on eval targets, where `enableEval: true` registers the `/eval/run` endpoint. It
+sets how long `/eval/run` waits for the Skip API to finish an agent eval. Skip runs the whole agent
+pipeline before it responds, and a hard case can take more than five minutes.
+
+The SDK also raises Node's fetch header and body timeouts to this value. Without that, fetch gives up
+after 300 seconds whatever this setting says, and the run is reported as `fetch failed`.
+
+When the limit is hit, the eval returns
+`The Skip eval run did not respond within N s. Raise evalRunAgentTimeoutMs in skip.config.cjs if runs legitimately take longer.`
+A value that is not a positive number is logged and replaced with the default.
+
+```javascript
+module.exports = {
+    enableEval: true,
+    evalRunAgentTimeoutMs: 15 * 60 * 1000, // 15 minutes
+};
+```
+
 ### How It's Loaded
 
 1. On MJAPI startup, `@askskip/core` attempts to `require('./skip.config.cjs')` from the working directory
