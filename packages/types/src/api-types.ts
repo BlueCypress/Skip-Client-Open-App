@@ -21,6 +21,7 @@ import type { SkipAPIArtifact } from './artifact-types.js';
 import type { SkipAPIAgentNote, SkipAPIAgentNoteType } from './agent-types.js';
 import type { SkipErrorDetail } from './error-types.js';
 import type { DatabasePlatform } from '@memberjunction/sql-dialect';
+import { SkipFormContext } from './form-context-types.js';
 
 /**
  * Describes the different request phases that are used to communicate with the Skip API Server
@@ -249,6 +250,18 @@ export class SkipAPIRequest {
      * a Skip run to a client build — gate behavior on `clientCapabilities`, not on this.
      */
     skipSDKVersion?: string;
+
+    /**
+     * The MJ entity form the user is looking at: which record, which form, the sections it
+     * draws, and (when the client could load it) the server's composition with fields per
+     * section, related grids, slots and installed contributions. Absent when the caller is
+     * not on a record form.
+     *
+     * `RecordPrimaryKey` says which record it describes. The app context it comes from is
+     * global and replaced wholesale by whichever surface published last, so a consumer must
+     * check that before assuming the snapshot matches the conversation.
+     */
+    formContext?: SkipFormContext;
 }
 
 /** Optional features a Skip SDK declares in {@link SkipAPIRequest.clientCapabilities}. */
