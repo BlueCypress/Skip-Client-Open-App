@@ -1,5 +1,14 @@
 # @askskip/server
 
+## 0.3.6
+
+### Patch Changes
+
+- 3ea1033: Add `ProfileEntityFields`: per-entity row counts and column statistics (coverage, blank text, zero numbers, placeholder dates, lengths, bounds; PostgreSQL cardinality), computed through the BaseView, sampled on large tables, bounded at the database and cached in memory with weekly refresh and failure backoff. `TestAndProfileQuerySQL` gains `zeroCount`, `blankCount`, `sentinelCount` and placeholder-free `minDate`/`maxDate`, leaves long text out of `COUNT(DISTINCT)`, and bounds its statement. Requires MemberJunction 6.1.5 or later.
+- Updated dependencies [3ea1033]
+  - @askskip/types@0.3.6
+  - @askskip/core@0.3.6
+
 ## 0.3.5
 
 ### Patch Changes
