@@ -38,9 +38,9 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@memberjunction/core": "^6.1.4",
-    "@memberjunction/core-entities": "^6.1.4",
-    "@memberjunction/credentials": "^6.1.4"
+    "@memberjunction/core": "^6.1.5",
+    "@memberjunction/core-entities": "^6.1.5",
+    "@memberjunction/credentials": "^6.1.5"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

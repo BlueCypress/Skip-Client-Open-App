@@ -29,7 +29,7 @@
  * is not rediscovered as a bug.
  */
 
-import { IsNumericSQLType, IsStringSQLType } from '@memberjunction/sql-dialect';
+import { IsDateSQLType, IsNumericSQLType, IsStringSQLType } from '@memberjunction/sql-dialect';
 import type { PrivacyPolicy } from './privacyPolicy.js';
 
 /** How a column's type was established. Surfaced in `skippedColumns` reasons. */
@@ -45,12 +45,36 @@ export interface ProfileColumn {
     isNumeric: boolean;
     /** Whether the column holds character data — gates domain-value eligibility. */
     isString: boolean;
+    /** Whether placeholder-date statistics apply. Metadata tier only: sampled dates arrive as JSON strings. */
+    isDate: boolean;
+    /**
+     * Character data's size class, metadata tier only. `long` (`max`, JSON) skips
+     * `COUNT(DISTINCT)`, whose sort decompresses every value; `bounded` gets a
+     * blank count. Null when unknown or not text.
+     */
+    textLength: TextLength | null;
     typeSource: ColumnTypeSource;
 }
+
+export type TextLength = 'bounded' | 'long';
 
 /** Everything the pure classifier needs to know about one column from the metadata tier. */
 export interface ColumnMetadataHint {
     sqlBaseType: string | null;
+    /** E.g. `nvarchar(MAX)`, `varchar(40)`; tells long text from bounded. */
+    sqlFullType?: string | null;
+}
+
+const LONG_TEXT_TYPES = new Set(['json', 'jsonb']);
+/** Unbounded on PostgreSQL but not necessarily large: keeps `COUNT(DISTINCT)`, gets no blank count. */
+const UNSIZED_TEXT_TYPES = new Set(['text']);
+
+/** The size class of a metadata-typed column. */
+export function textLengthOf(sqlBaseType: string, sqlFullType: string | null | undefined): TextLength | null {
+    const base = sqlBaseType.toLowerCase().replace(/\(.*$/, '').trim();
+    if (LONG_TEXT_TYPES.has(base) || /\(\s*max\s*\)/i.test(sqlFullType ?? '')) return 'long';
+    if (!IsStringSQLType(base) || UNSIZED_TEXT_TYPES.has(base)) return null;
+    return 'bounded';
 }
 
 /**
@@ -75,6 +99,8 @@ export function classifyColumns(
                 type: sqlBaseType,
                 isNumeric: IsNumericSQLType(sqlBaseType),
                 isString: IsStringSQLType(sqlBaseType),
+                isDate: IsDateSQLType(sqlBaseType),
+                textLength: textLengthOf(sqlBaseType, hint?.sqlFullType),
                 typeSource: 'metadata',
             };
         }
@@ -85,6 +111,8 @@ export function classifyColumns(
             type: sampled.type,
             isNumeric: sampled.isNumeric,
             isString: sampled.isString,
+            isDate: false,
+            textLength: null,
             typeSource: sampled.type === 'unknown' ? 'unresolved' : 'sampled',
         };
     });

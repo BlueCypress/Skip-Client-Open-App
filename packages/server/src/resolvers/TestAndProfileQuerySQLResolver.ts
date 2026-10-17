@@ -76,6 +76,9 @@ import { resolveMetadataHints } from './profile/metadataHints.js';
 import { getPrivacyPolicy } from './profile/privacyPolicy.js';
 import { shapeProfile } from './profile/shapeResponse.js';
 
+/** The profile statement's limit; the database cancels it when exceeded (MJ 6.1.5+). */
+const PROFILE_TIMEOUT_MS = 15_000;
+
 // ════════════════════════════════════════════════════════════════════
 // GraphQL types
 //
@@ -333,8 +336,14 @@ export class TestAndProfileQuerySQLResolver extends ResolverBase {
         const plan = buildProfileSQL(baseSQL, profiled, policy, dialect);
         if (!plan) return null;
 
+        // Bounded at the database, and well inside the 30 s Skip gives test plus
+        // profile together, so a slow profile costs its statistics, not the test.
         const aggregateRows = await provider.ExecuteSQL<Record<string, unknown>>(
-            plan.sql, undefined, { description: 'TestAndProfileQuerySQL: profile aggregates' }, contextUser,
+            plan.sql, undefined, {
+                description: 'TestAndProfileQuerySQL: profile aggregates',
+                readOnlyTransaction: true,
+                timeoutMs: PROFILE_TIMEOUT_MS,
+            }, contextUser,
         );
         if (!aggregateRows?.[0]) return null;
 

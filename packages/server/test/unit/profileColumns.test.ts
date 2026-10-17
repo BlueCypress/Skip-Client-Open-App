@@ -55,6 +55,25 @@ describe('classifyColumns — tier 1, MJ entity metadata', () => {
     });
 });
 
+describe('classifyColumns — dates and text length', () => {
+    it('marks dates and sizes text from metadata only', () => {
+        const [when, code, body, json, note, sampled] = classifyColumns(
+            ['When', 'Code', 'Body', 'Doc', 'Note', 'Guess'],
+            hints({
+                When: { sqlBaseType: 'datetime2' },
+                Code: { sqlBaseType: 'nvarchar', sqlFullType: 'nvarchar(20)' },
+                Body: { sqlBaseType: 'nvarchar', sqlFullType: 'nvarchar(MAX)' },
+                Doc: { sqlBaseType: 'jsonb' },
+                Note: { sqlBaseType: 'text' },
+            }),
+            [{ Guess: '2026-01-01' }],
+        );
+        expect(when.isDate).toBe(true);
+        expect([code.textLength, body.textLength, json.textLength, note.textLength]).toEqual(['bounded', 'long', 'long', null]);
+        expect(sampled).toMatchObject({ isDate: false, textLength: null });
+    });
+});
+
 describe('classifyColumns — tier 2, sampled values', () => {
     it('types an aggregate expression column as numeric from its values', () => {
         // COUNT(cl.ID) AS CompletionCount is an expression, so metadata resolves

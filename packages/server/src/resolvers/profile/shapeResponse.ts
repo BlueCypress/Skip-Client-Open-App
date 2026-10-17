@@ -17,6 +17,7 @@ import type {
 } from '@askskip/types';
 import type { ProfileColumn } from './columnTypes.js';
 import type { ProfileSQLPlan } from './buildProfileSQL.js';
+import { FormatDate } from '../shared/dialectSQL.js';
 
 /** Per-column statistics keyed by column name. */
 type FieldMap = Record<string, ProfileFieldSummary>;
@@ -59,7 +60,14 @@ interface RawColumnStats {
     min?: number;
     max?: number;
     nonZero?: number;
+    blank?: number;
+    sentinel?: number;
+    minDate?: string;
+    maxDate?: string;
 }
+
+const NUMERIC_BOUNDS = new Set<string>(['min', 'max']);
+const DATE_BOUNDS = new Set<string>(['minDate', 'maxDate']);
 
 function groupAggregatesByColumn(
     row: Record<string, unknown>,
@@ -69,11 +77,13 @@ function groupAggregatesByColumn(
 
     for (const aggregate of plan.aggregates) {
         const stats = byColumn.get(aggregate.column) ?? {};
-        const value = aggregate.kind === 'min' || aggregate.kind === 'max'
-            ? toNumber(row[aggregate.alias])
-            : toInteger(row[aggregate.alias]);
-
-        if (value != null) stats[aggregate.kind] = value;
+        const raw = row[aggregate.alias];
+        if (DATE_BOUNDS.has(aggregate.kind)) {
+            if (raw != null) stats[aggregate.kind as 'minDate' | 'maxDate'] = FormatDate(String(raw));
+        } else {
+            const value = NUMERIC_BOUNDS.has(aggregate.kind) ? toNumber(raw) : toInteger(raw);
+            if (value != null) stats[aggregate.kind as Exclude<keyof RawColumnStats, 'minDate' | 'maxDate'>] = value;
+        }
         byColumn.set(aggregate.column, stats);
     }
 
@@ -81,27 +91,30 @@ function groupAggregatesByColumn(
 }
 
 function buildFieldSummary(type: string, stats: RawColumnStats, totalRows: number): ProfileFieldSummary {
-    const distinctCount = stats.distinct ?? 0;
     const nullCount = stats.nulls ?? 0;
+    const summary: ProfileFieldSummary = { type, nullCount, hasNulls: nullCount > 0 };
 
-    const summary: ProfileFieldSummary = {
-        type,
-        distinctCount,
-        nullCount,
-        hasNulls: nullCount > 0,
+    // Long text has no distinct count: its COUNT(DISTINCT) would decompress every value.
+    if (stats.distinct != null) {
+        summary.distinctCount = stats.distinct;
         // Matches BaseClientAction.computeResultStats' rounding so the number the
         // model sees has the same shape it does on every other Skip path.
-        duplicationRatio: totalRows > 0
-            ? Math.round((1 - distinctCount / totalRows) * 100) / 100
-            : 0,
-    };
+        summary.duplicationRatio = totalRows > 0 ? Math.round((1 - stats.distinct / totalRows) * 100) / 100 : 0;
+    }
 
     // The numeric tier is emitted only when the aggregate pass actually returned
     // it — a numeric column over zero matching rows yields SQL NULL for MIN/MAX,
     // and claiming `min: 0` there would be a fabrication.
     if (stats.min != null) summary.min = stats.min;
     if (stats.max != null) summary.max = stats.max;
-    if (stats.nonZero != null) summary.nonZero = stats.nonZero;
+    if (stats.nonZero != null) {
+        summary.nonZero = stats.nonZero;
+        summary.zeroCount = Math.max(0, totalRows - nullCount - stats.nonZero);
+    }
+    if (stats.blank != null) summary.blankCount = stats.blank;
+    if (stats.sentinel != null) summary.sentinelCount = stats.sentinel;
+    if (stats.minDate != null) summary.minDate = stats.minDate;
+    if (stats.maxDate != null) summary.maxDate = stats.maxDate;
 
     return summary;
 }
@@ -113,7 +126,7 @@ function buildFieldSummary(type: string, stats: RawColumnStats, totalRows: numbe
  */
 function buildResultStats(fields: FieldMap, totalRows: number): QueryProfile['stats'] {
     const idColumn = Object.keys(fields).find(name => /Id$/i.test(name));
-    const estimatedEntityCount = idColumn ? fields[idColumn].distinctCount : totalRows;
+    const estimatedEntityCount = idColumn ? fields[idColumn].distinctCount ?? totalRows : totalRows;
 
     return {
         totalRows,

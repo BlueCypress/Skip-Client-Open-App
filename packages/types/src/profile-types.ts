@@ -64,14 +64,17 @@ export interface ProfileFieldSummary {
      * inferred from the sampled rows.
      */
     type: string;
-    /** `COUNT(DISTINCT col)` over the full result set. */
-    distinctCount: number;
+    /**
+     * `COUNT(DISTINCT col)` over the full result set. Absent for long text
+     * (`max`, JSON), whose distinct count costs a decompressing sort of every value.
+     */
+    distinctCount?: number;
     /** `SUM(CASE WHEN col IS NULL THEN 1 ELSE 0 END)` over the full result set. */
     nullCount: number;
     /** Derived from `nullCount`; retained because existing prompt guidance uses it. */
     hasNulls: boolean;
-    /** `1 - distinctCount / totalRows`. 0 = all unique, 1 = all one value. */
-    duplicationRatio: number;
+    /** `1 - distinctCount / totalRows`. 0 = all unique, 1 = all one value. Absent with `distinctCount`. */
+    duplicationRatio?: number;
     /** Mean character length. Present only for columns typed as strings. */
     avgLength?: number;
     /** Numeric tier — present only when the column typed as numeric. */
@@ -84,6 +87,16 @@ export interface ProfileFieldSummary {
      * "most rows legitimately aggregate to zero".
      */
     nonZero?: number;
+    /** Numeric tier — rows where the value is exactly 0 (`totalRows - nullCount - nonZero`). */
+    zeroCount?: number;
+    /** Bounded text only — rows holding an empty or whitespace-only string. */
+    blankCount?: number;
+    /** Date columns typed from metadata — rows holding a placeholder date (before 1901, from 2100, or 1970-01-01). */
+    sentinelCount?: number;
+    /** Earliest date, placeholders excluded; `YYYY-MM-DD`, with `THH:MM:SS` when not midnight. */
+    minDate?: string;
+    /** Latest date, placeholders excluded; as `minDate`. */
+    maxDate?: string;
 }
 
 /** Result-level statistics computed over the FULL, uncapped result set. */
