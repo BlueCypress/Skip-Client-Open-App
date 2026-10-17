@@ -15,7 +15,9 @@
 import { SQLParser, AnalyzeTopLevelOrderBy } from '@memberjunction/sql-parser';
 import type { SQLDialect } from '@memberjunction/sql-dialect';
 import type { ProfileColumn } from './columnTypes.js';
+import { SplitLeadingCTEs } from './splitLeadingCTEs.js';
 import type { PrivacyPolicy } from './privacyPolicy.js';
+import { BLANK_PREDICATE, DATE_TEXT, SentinelPredicate } from '../shared/dialectSQL.js';
 
 /** The CTE the candidate query is hoisted into. Prefixed to avoid colliding with a user CTE. */
 const PROFILE_CTE = '__skip_profile';
@@ -24,7 +26,7 @@ const PROFILE_CTE = '__skip_profile';
 const TOTAL_ROWS_ALIAS = 'skip_total_rows';
 
 /** Which statistic a returned aggregate column carries. */
-export type ProfileAggregateKind = 'distinct' | 'nulls' | 'min' | 'max' | 'nonZero';
+export type ProfileAggregateKind = 'distinct' | 'nulls' | 'min' | 'max' | 'nonZero' | 'blank' | 'sentinel' | 'minDate' | 'maxDate';
 
 /** Maps one column of the aggregate result back to the column and statistic it describes. */
 export interface ProfileAggregate {
@@ -85,13 +87,22 @@ export function buildProfileSQL(
             aggregates.push({ alias, column: column.name, kind });
         };
 
-        emit('distinct', `COUNT(DISTINCT ${quoted})`);
+        // Long text is left out of COUNT(DISTINCT): its sort decompresses every value.
+        if (column.textLength !== 'long') emit('distinct', `COUNT(DISTINCT ${quoted})`);
         emit('nulls', `SUM(CASE WHEN ${quoted} IS NULL THEN 1 ELSE 0 END)`);
 
         if (column.isNumeric) {
             emit('min', `MIN(${quoted})`);
             emit('max', `MAX(${quoted})`);
             emit('nonZero', `SUM(CASE WHEN ${quoted} IS NOT NULL AND ${quoted} <> 0 THEN 1 ELSE 0 END)`);
+        }
+        const platform = dialect.PlatformKey;
+        if (column.textLength === 'bounded') emit('blank', `SUM(CASE WHEN ${BLANK_PREDICATE[platform](quoted)} THEN 1 ELSE 0 END)`);
+        if (column.isDate && column.typeSource === 'metadata') {
+            const sentinel = SentinelPredicate(quoted, platform);
+            emit('sentinel', `SUM(CASE WHEN ${sentinel} THEN 1 ELSE 0 END)`);
+            emit('minDate', DATE_TEXT[platform](`MIN(CASE WHEN NOT ${sentinel} THEN ${quoted} END)`));
+            emit('maxDate', DATE_TEXT[platform](`MAX(CASE WHEN NOT ${sentinel} THEN ${quoted} END)`));
         }
     });
 
@@ -152,7 +163,7 @@ function containsWriteStatement(sql: string, dialect: SQLDialect): boolean {
  *
  * This is the piece most likely to break first, because Skip generates
  * CTE-headed SQL routinely and `WITH __skip_profile AS (WITH x AS …)` is a
- * syntax error on every platform. `SQLParser.ExtractCTEs` splits an existing
+ * syntax error on every platform. `SplitLeadingCTEs` slices an existing
  * `WITH` list from its main statement so the candidate's own CTEs can be hoisted
  * to become *siblings* of the profile CTE rather than nested inside it.
  *
@@ -191,17 +202,21 @@ function hoistIntoProfileCTE(baseSQL: string, dialect: SQLDialect): string | nul
     // correct split for the shapes MJ's own preprocessing handles — including the
     // bracket-quoted CTE names that composition emits. The generated SQL is
     // validated by parsing it instead; see `isSafeGeneratedSQL`.
-    const extraction = SQLParser.ExtractCTEs(cleaned, dialect);
+    // Sliced, never re-emitted: `SQLParser.ExtractCTEs` rewrote `(VALUES …) AS v(n)`
+    // into invalid SQL, failing correct queries (E4 P-1).
+    const startsWithCTE = /^\s*(--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*WITH\b/i.test(cleaned);
+    const split = SplitLeadingCTEs(cleaned);
+    // A leading WITH that cannot be read would nest inside the profile CTE, which SQL Server rejects.
+    if (startsWithCTE && !split) return null;
 
-    const mainStatement = extraction ? extraction.MainStatement : cleaned;
-    const existingCTEs = extraction
-        ? extraction.CTEDefinitions.map(def => quoteCTEName(def, dialect))
-        : [];
+    const mainStatement = split ? split.MainStatement : cleaned;
+    // Verbatim, names included: they already match how the main statement references them.
+    const existingCTEs = split ? split.CTEDefinitions : [];
 
     const body = stripUnneededOrderBy(mainStatement, dialect);
     const profileCTE = `${dialect.QuoteIdentifier(PROFILE_CTE)} AS (\n${body}\n)`;
 
-    return `WITH ${[...existingCTEs, profileCTE].join(',\n')}`;
+    return `WITH ${split?.Recursive ? 'RECURSIVE ' : ''}${[...existingCTEs, profileCTE].join(',\n')}`;
 }
 
 /** Trailing clauses that make the text after `ORDER BY` load-bearing rather than decorative. */
@@ -248,23 +263,6 @@ function stripUnneededOrderBy(sql: string, dialect: SQLDialect): string {
     if (!parsed.IsValid || parsed.OuterCap) return sql;
 
     return sql.slice(0, cut).trimEnd();
-}
-
-/**
- * `ExtractCTEs` returns definitions with unquoted names (`myName AS (…)`), which
- * breaks if a CTE is named after a reserved word and, on PostgreSQL, silently
- * changes case. Re-applies dialect quoting to the name only.
- *
- * Mirrors `QueryPagingEngine.quoteCteName`, which is `private static`.
- */
-function quoteCTEName(cteDefinition: string, dialect: SQLDialect): string {
-    const match = cteDefinition.match(/^(\[([^\]]+)\]|"([^"]+)"|([A-Za-z_]\w*))\s+AS\s*\(/i);
-    if (!match) return cteDefinition;
-
-    const bareName = match[2] ?? match[3] ?? match[4];
-    if (!bareName) return cteDefinition;
-
-    return dialect.QuoteIdentifier(bareName) + cteDefinition.substring(match[1].length);
 }
 
 /**
