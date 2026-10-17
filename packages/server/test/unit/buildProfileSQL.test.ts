@@ -20,7 +20,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { GetDialect } from '@memberjunction/sql-dialect';
+import { AutoQuotePostgreSQLIdentifiers, GetDialect } from '@memberjunction/sql-dialect';
 import { buildProfileSQL } from '../../src/resolvers/profile/buildProfileSQL.js';
 import type { ProfileColumn } from '../../src/resolvers/profile/columnTypes.js';
 import { getPrivacyPolicy } from '../../src/resolvers/profile/privacyPolicy.js';
@@ -36,6 +36,8 @@ function column(name: string, overrides: Partial<ProfileColumn> = {}): ProfileCo
         type: 'int',
         isNumeric: true,
         isString: false,
+        isDate: false,
+        textLength: null,
         typeSource: 'metadata',
         ...overrides,
     };
@@ -126,9 +128,9 @@ describe('buildProfileSQL — CTE hoisting (TransactSQL)', () => {
         expect(countWith(plan!.sql)).toBe(1);
         expect(plan!.sql.trimStart().toUpperCase().startsWith('WITH ')).toBe(true);
 
-        // The candidate's CTE is quoted and sits before the profile CTE in the
-        // same comma-separated list.
-        const userCTE = plan!.sql.indexOf(`${q('completed')} AS (`);
+        // The candidate's CTE is carried verbatim (sliced, never re-emitted) and
+        // sits before the profile CTE in the same comma-separated list.
+        const userCTE = plan!.sql.indexOf('completed AS (');
         const profileCTE = plan!.sql.indexOf(`${q('__skip_profile')} AS (`);
         expect(userCTE).toBeGreaterThan(-1);
         expect(profileCTE).toBeGreaterThan(userCTE);
@@ -137,7 +139,7 @@ describe('buildProfileSQL — CTE hoisting (TransactSQL)', () => {
         // the hoisted CTE.
         const body = plan!.sql.slice(profileCTE);
         expect(body).not.toMatch(/\bWITH\b/i);
-        expect(body).toMatch(/LEFT JOIN \[completed\]/i);
+        expect(body).toContain("LEFT JOIN completed c ON c.EmployeeID = e.EmployeeID");
     });
 
     it('keeps ORDER BY when a cap is present — the sort selects which rows the result contains', () => {
@@ -268,5 +270,92 @@ describe.each(DIALECTS)('buildProfileSQL — emits no row values ($name)', ({ di
         expect(outer).not.toMatch(/GROUP\s+BY/i);
         expect(outer).not.toMatch(/UNION/i);
         expect(outer).not.toMatch(/HAVING/i);
+    });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// Slicing, not re-emitting (E4 P-1): `SQLParser.ExtractCTEs` rewrote
+// `(VALUES …) AS v(n)` into `AS [v(n)]` and `DATEADD(MONTH, …)` into
+// `DATEADD([MONTH], …)`, so a correct query profiled as 'error'.
+// ════════════════════════════════════════════════════════════════════
+
+import { SplitLeadingCTEs } from '../../src/resolvers/profile/splitLeadingCTEs.js';
+
+describe('SplitLeadingCTEs', () => {
+    const valuesCTE = `WITH Months AS (
+    SELECT DATEADD(MONTH, -v.n, DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)) AS MonthStart
+    FROM (VALUES (0),(1),(2)) AS v(n)
+), Counts AS (SELECT 1 AS One)
+SELECT m.MonthStart FROM Months m ORDER BY m.MonthStart`;
+
+    it('keeps CTE text byte-for-byte, including VALUES aliases and DATEADD parts', () => {
+        const split = SplitLeadingCTEs(valuesCTE)!;
+        expect(split.CTEDefinitions[0]).toContain('FROM (VALUES (0),(1),(2)) AS v(n)');
+        expect(split.CTEDefinitions[0]).toContain('DATEADD(MONTH, -v.n');
+        expect(split.CTEDefinitions[1]).toBe('Counts AS (SELECT 1 AS One)');
+        expect(split.MainStatement).toBe('SELECT m.MonthStart FROM Months m ORDER BY m.MonthStart');
+    });
+
+    it('ignores parentheses and commas inside strings, quoted names and comments', () => {
+        const sql = `-- leading comment (with parens)
+WITH [Odd Name] AS (SELECT ')' AS p, "a(b" FROM t /* ) , */ WHERE x = 'it''s (fine)'),
+"pg Cte" (a, b) AS NOT MATERIALIZED (SELECT 1, 2)
+SELECT * FROM [Odd Name]`;
+        const split = SplitLeadingCTEs(sql)!;
+        expect(split.CTEDefinitions).toHaveLength(2);
+        expect(split.CTEDefinitions[1]).toBe('"pg Cte" (a, b) AS NOT MATERIALIZED (SELECT 1, 2)');
+        expect(split.MainStatement).toBe('SELECT * FROM [Odd Name]');
+    });
+
+    it('keeps RECURSIVE and returns null when there is no leading WITH', () => {
+        expect(SplitLeadingCTEs('WITH RECURSIVE r AS (SELECT 1) SELECT * FROM r')?.Recursive).toBe(true);
+        expect(SplitLeadingCTEs('SELECT 1')).toBeNull();
+    });
+
+    it('refuses a WITH list it cannot read rather than guessing', () => {
+        expect(SplitLeadingCTEs('WITH broken AS (SELECT 1')).toBeNull();
+    });
+
+    it('profiles the VALUES query that used to fail, on SQL Server', () => {
+        const plan = buildProfileSQL(valuesCTE, [column('MonthStart')], POLICY, GetDialect('sqlserver'));
+        expect(plan).not.toBeNull();
+        expect(plan!.sql).toContain('AS v(n)');
+        expect(plan!.sql).not.toContain('[v(n)]');
+        expect(countWith(plan!.sql)).toBe(1);
+    });
+});
+
+describe('buildProfileSQL — data-quality statistics', () => {
+    const text = (name: string, textLength: 'bounded' | 'long') => column(name, { type: 'nvarchar', isNumeric: false, isString: true, textLength });
+    const date = (name: string) => column(name, { type: 'datetime2', isNumeric: false, isDate: true });
+
+    it('counts blanks in bounded text, and leaves long text out of COUNT(DISTINCT)', () => {
+        const plan = buildProfileSQL(PLAIN_SQL, [text('Code', 'bounded'), text('Body', 'long')], POLICY, GetDialect('sqlserver'))!;
+        expect(plan.sql).toContain("SUM(CASE WHEN [Code] = '' THEN 1 ELSE 0 END)");
+        expect(plan.sql).toContain('COUNT(DISTINCT [Code])');
+        expect(plan.sql).not.toContain('COUNT(DISTINCT [Body])');
+        expect(plan.sql).not.toContain("[Body] = ''");
+        expect(plan.aggregates.filter(a => a.column === 'Body').map(a => a.kind)).toEqual(['nulls']);
+    });
+
+    it('counts placeholder dates and bounds dates without them, on both engines', () => {
+        const ss = buildProfileSQL(PLAIN_SQL, [date('Expires')], POLICY, GetDialect('sqlserver'))!;
+        expect(ss.sql).toContain("[Expires] >= CAST('2100-01-01' AS DATETIME2)");
+        expect(ss.sql).toContain('CONVERT(NVARCHAR(40), MAX(CASE WHEN NOT');
+        const pg = buildProfileSQL(PLAIN_SQL, [date('Expires'), text('Code', 'bounded')], POLICY, GetDialect('postgresql'))!;
+        expect(pg.sql).toContain(`"Expires" < date '1901-01-01'`);
+        expect(pg.sql).toContain(`btrim("Code") = ''`);
+        expect(pg.aggregates.map(a => a.kind)).toEqual(expect.arrayContaining(['sentinel', 'minDate', 'maxDate', 'blank']));
+    });
+
+    it('emits PostgreSQL statistics that MJ\'s auto-quoting leaves unchanged', () => {
+        const pg = buildProfileSQL(PLAIN_SQL, [date('Expires'), text('Code', 'bounded'), text('Body', 'long')], POLICY, GetDialect('postgresql'))!;
+        const select = pg.sql.slice(pg.sql.lastIndexOf('SELECT'));
+        expect(AutoQuotePostgreSQLIdentifiers(select)).toBe(select);
+    });
+
+    it('does not treat a sampled string as a date', () => {
+        const plan = buildProfileSQL(PLAIN_SQL, [column('When', { type: 'string', isNumeric: false, isString: true, typeSource: 'sampled' })], POLICY, GetDialect('sqlserver'))!;
+        expect(plan.aggregates.map(a => a.kind)).toEqual(['distinct', 'nulls']);
     });
 });

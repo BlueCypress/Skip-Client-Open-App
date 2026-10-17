@@ -63,6 +63,7 @@ export function resolveMetadataHints(
             if (!field.sqlBaseType) continue;
             hints.set(field.name, {
                 sqlBaseType: field.sqlBaseType,
+                sqlFullType: field.sqlFullType ?? null,
             });
         }
     } catch (error: unknown) {

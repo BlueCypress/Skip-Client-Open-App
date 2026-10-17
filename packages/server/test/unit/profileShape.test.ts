@@ -21,9 +21,9 @@ import type { ProfileSQLPlan } from '../../src/resolvers/profile/buildProfileSQL
 import type { ProfileColumn } from '../../src/resolvers/profile/columnTypes.js';
 
 const COLUMNS: ProfileColumn[] = [
-    { name: 'EmployeeID', type: 'int', isNumeric: true, isString: false, typeSource: 'metadata' },
-    { name: 'CompletionCount', type: 'number', isNumeric: true, isString: false, typeSource: 'sampled' },
-    { name: 'Occupation', type: 'nvarchar', isNumeric: false, isString: true, typeSource: 'metadata' },
+    { name: 'EmployeeID', type: 'int', isNumeric: true, isString: false, isDate: false, textLength: null, typeSource: 'metadata' },
+    { name: 'CompletionCount', type: 'number', isNumeric: true, isString: false, isDate: false, textLength: null, typeSource: 'sampled' },
+    { name: 'Occupation', type: 'nvarchar', isNumeric: false, isString: true, isDate: false, textLength: 'bounded', typeSource: 'metadata' },
 ];
 
 const PLAN: ProfileSQLPlan = {
@@ -57,7 +57,7 @@ describe('shapeProfile', () => {
 
         expect(Object.keys(profile.stats).sort()).toEqual(['estimatedEntityCount', 'rowMultiplier', 'totalRows']);
         expect(Object.keys(profile.fields.CompletionCount).sort()).toEqual(
-            ['distinctCount', 'duplicationRatio', 'hasNulls', 'max', 'min', 'nonZero', 'nullCount', 'type'],
+            ['distinctCount', 'duplicationRatio', 'hasNulls', 'max', 'min', 'nonZero', 'nullCount', 'type', 'zeroCount'],
         );
     });
 
@@ -120,3 +120,34 @@ describe('shapeProfile', () => {
     });
 });
 
+
+describe('shapeProfile — data-quality statistics', () => {
+    const plan: ProfileSQLPlan = {
+        sql: '-- not executed', totalRowsAlias: 'skip_total_rows', skipped: [],
+        aggregates: [
+            { alias: 'a_n', column: 'Amount', kind: 'nulls' },
+            { alias: 'a_z', column: 'Amount', kind: 'nonZero' },
+            { alias: 'c_n', column: 'Code', kind: 'nulls' },
+            { alias: 'c_b', column: 'Code', kind: 'blank' },
+            { alias: 'b_n', column: 'Body', kind: 'nulls' },
+            { alias: 'e_s', column: 'Expires', kind: 'sentinel' },
+            { alias: 'e_lo', column: 'Expires', kind: 'minDate' },
+            { alias: 'e_hi', column: 'Expires', kind: 'maxDate' },
+        ],
+    };
+    const row = { skip_total_rows: 100, a_n: 10, a_z: 0, c_n: 0, c_b: 40, b_n: 5, e_s: 85, e_lo: '2013-01-01 00:00:00.0000000', e_hi: '2030-06-30 09:30:00+00' };
+
+    it('derives zeroCount, passes blank and placeholder counts, and formats date bounds', () => {
+        const fields = shapeProfile(row, plan, [], []).fields;
+        expect(fields.Amount).toMatchObject({ nonZero: 0, zeroCount: 90 });
+        expect(fields.Code.blankCount).toBe(40);
+        expect(fields.Expires).toMatchObject({ sentinelCount: 85, minDate: '2013-01-01', maxDate: '2030-06-30T09:30:00' });
+    });
+
+    it('omits the distinct statistics a long-text column did not compute, rather than claiming zero', () => {
+        const body = shapeProfile(row, plan, [], []).fields.Body;
+        expect(body.distinctCount).toBeUndefined();
+        expect(body.duplicationRatio).toBeUndefined();
+        expect(body.nullCount).toBe(5);
+    });
+});
