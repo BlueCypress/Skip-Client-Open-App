@@ -385,6 +385,43 @@ export function resolveEvalRunAgentTimeoutMs(cfg: Record<string, unknown> | null
     return DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS;
 }
 
+/** The parts of the MJAPI address that make up the URL Skip calls back to. */
+export interface SkipCallbackURLParts {
+    baseUrl?: string;
+    publicUrl?: string;
+    graphqlPort?: number;
+    graphqlRootPath?: string;
+}
+
+/**
+ * Builds the URL Skip Brain calls back to (`callingServerURL`): this MJAPI's GraphQL endpoint.
+ *
+ * With `MJAPI_PUBLIC_URL` set, that is the public URL. When the public URL is a bare origin
+ * (no path) and GraphQL is served under a root path (`GRAPHQL_ROOT_PATH`, e.g. `/api/` behind a
+ * CDN that routes `/api/*` to MJAPI), the root path is appended: the bare origin serves the web
+ * app, so a callback to it gets HTML back. A public URL that already carries a path is used as
+ * given, so an operator can still name the exact endpoint. Without a public URL the address is
+ * `baseUrl:graphqlPort` plus the root path, as before.
+ */
+export function buildSkipCallbackURL(parts: SkipCallbackURLParts): string {
+    const rootPath = parts.graphqlRootPath || '/';
+    if (!parts.publicUrl) {
+        return `${parts.baseUrl ?? 'http://localhost'}:${parts.graphqlPort ?? 4000}${rootPath}`;
+    }
+    let parsed: URL;
+    try {
+        parsed = new URL(parts.publicUrl);
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        LogError(`[skip-config] MJAPI_PUBLIC_URL is not a valid URL (${msg}); using it as given for the Skip callback.`);
+        return parts.publicUrl;
+    }
+    if ((parsed.pathname === '' || parsed.pathname === '/') && rootPath !== '/') {
+        return `${parsed.origin}${rootPath.startsWith('/') ? rootPath : `/${rootPath}`}`;
+    }
+    return parts.publicUrl;
+}
+
 /**
  * Reads Skip client configuration from environment variables and skip.config.cjs.
  */

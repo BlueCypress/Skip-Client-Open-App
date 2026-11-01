@@ -36,7 +36,7 @@ import { MJConversationDetailEntity, QueryEngine } from '@memberjunction/core-en
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { gzip as gzipCompress, createGunzip } from 'zlib';
-import { getSkipConfig, getDbType, resolveSkipApiKey, DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS } from '@askskip/core';
+import { buildSkipCallbackURL, getSkipConfig, getDbType, resolveSkipApiKey, DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS } from '@askskip/core';
 import type { Agent } from 'undici';
 import { getEvalDispatcher, describeEvalError } from './eval-transport.js';
 import {
@@ -702,7 +702,7 @@ export class SkipSDK {
         } catch {
             // Not running inside MJAPI — fall back to getSkipConfig() env values.
         }
-        const url = publicUrl || `${baseUrl}:${graphqlPort}${graphqlRootPath}`;
+        const url = buildSkipCallbackURL({ baseUrl, publicUrl, graphqlPort, graphqlRootPath });
         if (!SkipSDK.__callbackURLLogged) {
             SkipSDK.__callbackURLLogged = true;
             LogStatus(`[SkipSDK] Resolved Skip callback URL: ${url}`);

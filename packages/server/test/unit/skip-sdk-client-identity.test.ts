@@ -27,6 +27,7 @@ vi.mock('@askskip/core', () => ({
     }),
     getDbType: () => 'sqlserver',
     resolveSkipApiKey: vi.fn().mockResolvedValue('test-api-key'),
+    buildSkipCallbackURL: () => 'http://localhost:4000/',
 }));
 
 vi.mock('@memberjunction/core', () => ({
