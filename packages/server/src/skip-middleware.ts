@@ -21,6 +21,7 @@ import { Router, json as jsonBodyParser } from 'express';
 import { GetAPIKeyEngine } from '@memberjunction/api-keys';
 import { UserCache } from '@memberjunction/sqlserver-dataprovider';
 import {
+    buildSkipCallbackURL,
     ensureSkipRecords,
     getSkipConfig,
     DEFAULT_SKIP_BASE_URL,
@@ -257,7 +258,7 @@ export class SkipMiddleware extends BaseServerMiddleware {
      */
     private logAdvertisedCallbackURL(): void {
         const config = getSkipConfig();
-        const callbackURL = config.publicUrl || `${config.baseUrl}:${config.graphqlPort}${config.graphqlRootPath}`;
+        const callbackURL = buildSkipCallbackURL(config);
         LogStatus(`[skip-client] Callback URL advertised to Skip (callingServerURL): ${callbackURL}. ` +
             'Set MJAPI_PUBLIC_URL (or GRAPHQL_BASE_URL/GRAPHQL_PORT/GRAPHQL_ROOT_PATH) if Skip cannot reach this address.');
     }

@@ -44,6 +44,7 @@ vi.mock('@askskip/core', () => ({
     }),
     getDbType: () => 'sqlserver',
     resolveSkipApiKey: vi.fn().mockResolvedValue('test-api-key'),
+    buildSkipCallbackURL: () => 'http://localhost:4000/',
 }));
 
 // Mock MJ dependencies that SkipSDK uses during request building
