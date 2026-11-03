@@ -242,7 +242,9 @@ export class SkipMiddleware extends BaseServerMiddleware {
      * Skip-specific GraphQL resolvers, merged into the host MJServer schema by
      * `serve()`. Currently `TestAndProfileQuerySQL` — a superset of MJ's
      * `TestQuerySQL` that can additionally return statistics computed over the
-     * full uncapped result set without row data leaving the client's database.
+     * full uncapped result set without row data leaving the client's database —
+     * `TestQuerySQLBatch`, which runs several `TestQuerySQL` items through MJ's own
+     * resolver in one call, and `ProfileEntityFields`.
      *
      * Additive and inert: nothing calls it until Skip does, and Skip degrades
      * cleanly against deployments that predate it.
