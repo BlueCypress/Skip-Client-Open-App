@@ -15,7 +15,16 @@
 import { createHash } from 'crypto';
 import { LogError, RunView } from '@memberjunction/core';
 import type { IMetadataProvider, UserInfo, BaseEntity } from '@memberjunction/core';
-import { MJAIAgentEntity, MJComponentRegistryEntity } from '@memberjunction/core-entities';
+import {
+    MJAIAgentEntity,
+    MJAIAgentActionEntity,
+    MJAIAgentPromptEntity,
+    MJAIPromptEntity,
+    MJAIPromptModelEntity,
+    MJComponentRegistryEntity,
+    MJTemplateContentEntity,
+    MJTemplateEntity,
+} from '@memberjunction/core-entities';
 import { CredentialEngine } from '@memberjunction/credentials';
 import {
     DEFAULT_SKIP_REGISTRY_NAME,
@@ -26,6 +35,7 @@ import {
     resolveSkipApiKey,
     resolveSkipRegistryURI,
 } from './skip-config.js';
+import { SKIP_AGENT_PROMPT_SPECS } from './skip-local-prompts.js';
 
 /** Credential type used for the per-registry API keys stored below. */
 const API_KEY_CREDENTIAL_TYPE = 'API Key';
@@ -425,6 +435,17 @@ async function healProductionRegistryIfUnused(
  */
 export async function removeSkipRecords(contextUser: UserInfo, log: (m: string) => void): Promise<void> {
     const subAgentIds = SKIP_SUB_AGENTS.map((s) => `'${s.id}'`).join(', ');
+    const allAgentIds = [`'${SKIP_AGENT_ID}'`, ...SKIP_SUB_AGENTS.map((s) => `'${s.id}'`)].join(', ');
+    const promptIds = SKIP_AGENT_PROMPT_SPECS.map((p) => `'${p.promptId}'`).join(', ');
+    const templateIds = SKIP_AGENT_PROMPT_SPECS.map((p) => `'${p.templateId}'`).join(', ');
+
+    await deleteMatching('MJ: AI Agent Actions', `AgentID IN (${allAgentIds})`, contextUser, log);
+    await deleteMatching('MJ: AI Agent Prompts', `AgentID IN (${allAgentIds}) OR PromptID IN (${promptIds})`, contextUser, log);
+    await deleteMatching('MJ: AI Prompt Models', `PromptID IN (${promptIds})`, contextUser, log);
+    await deleteMatching('MJ: AI Prompts', `ID IN (${promptIds})`, contextUser, log);
+    await deleteMatching('MJ: Template Contents', `TemplateID IN (${templateIds})`, contextUser, log);
+    await deleteMatching('MJ: Templates', `ID IN (${templateIds})`, contextUser, log);
+
     await deleteMatching(
         'MJ: AI Agents',
         `ParentID='${SKIP_AGENT_ID}' OR ID IN (${subAgentIds})`,
@@ -490,6 +511,14 @@ async function ensureSkipAgent(provider: IMetadataProvider, contextUser: UserInf
             agent.DefaultArtifactTypeID = componentArtifactTypeID;
             changed = true;
         }
+        if (agent.ModelSelectionMode !== 'Agent') {
+            agent.ModelSelectionMode = 'Agent';
+            changed = true;
+        }
+        if (agent.ChatHandlingOption != null) {
+            agent.ChatHandlingOption = null;
+            changed = true;
+        }
 
         if (changed) {
             if (await agent.Save()) {
@@ -502,6 +531,7 @@ async function ensureSkipAgent(provider: IMetadataProvider, contextUser: UserInf
         }
 
         await ensureSkipSubAgents(provider, contextUser, log, typeID, categoryID, componentArtifactTypeID);
+        await ensureSkipPromptsAndActions(provider, contextUser, log);
         return;
     }
 
@@ -516,6 +546,8 @@ async function ensureSkipAgent(provider: IMetadataProvider, contextUser: UserInf
     agent.DriverClass = 'SkipLocalAgent';
     agent.ExecutionOrder = 0;
     agent.ExposeAsAction = true;
+    agent.ModelSelectionMode = 'Agent';
+    agent.ChatHandlingOption = null;
     agent.IconClass = 'mj-icon-skip';
     if (typeID) agent.TypeID = typeID;
     if (categoryID) agent.CategoryID = categoryID;
@@ -529,6 +561,7 @@ async function ensureSkipAgent(provider: IMetadataProvider, contextUser: UserInf
     }
 
     await ensureSkipSubAgents(provider, contextUser, log, typeID, categoryID, componentArtifactTypeID);
+    await ensureSkipPromptsAndActions(provider, contextUser, log);
 }
 
 async function ensureSkipSubAgents(
@@ -588,6 +621,18 @@ async function ensureSkipSubAgents(
                 subAgent.InvocationMode = 'Sub-Agent';
                 changed = true;
             }
+            if (subAgent.MessageMode !== 'All') {
+                subAgent.MessageMode = 'All';
+                changed = true;
+            }
+            if (subAgent.ModelSelectionMode !== 'Agent') {
+                subAgent.ModelSelectionMode = 'Agent';
+                changed = true;
+            }
+            if (subAgent.ChatHandlingOption != null) {
+                subAgent.ChatHandlingOption = null;
+                changed = true;
+            }
             if ((subAgent.DriverClass ?? null) !== spec.driverClass) {
                 subAgent.DriverClass = spec.driverClass;
                 changed = true;
@@ -622,6 +667,9 @@ async function ensureSkipSubAgents(
         subAgent.ExecutionOrder = spec.executionOrder;
         subAgent.ExposeAsAction = false;
         subAgent.InvocationMode = 'Sub-Agent';
+        subAgent.MessageMode = 'All';
+        subAgent.ModelSelectionMode = 'Agent';
+        subAgent.ChatHandlingOption = null;
         subAgent.IconClass = 'mj-icon-skip';
         if (typeID) subAgent.TypeID = typeID;
         if (categoryID) subAgent.CategoryID = categoryID;
@@ -631,6 +679,237 @@ async function ensureSkipSubAgents(
             log(`✓ Created sub-agent "${spec.name}".`);
         } else {
             LogError(`[skip-client] Failed to create sub-agent "${spec.name}": ${subAgent.LatestResult?.Message ?? 'unknown error'}`);
+        }
+    }
+}
+
+async function ensureSkipPromptsAndActions(
+    provider: IMetadataProvider,
+    contextUser: UserInfo,
+    log: (m: string) => void,
+): Promise<void> {
+    const rv = new RunView();
+    const promptTypeID = await lookupId('MJ: AI Prompt Types', 'Chat', contextUser);
+    const promptCategoryID = await lookupId('MJ: AI Prompt Categories', 'MJ: System', contextUser);
+    const templateContentTypeID =
+        (await lookupId('MJ: Template Content Types', 'Text', contextUser)) ??
+        (await lookupId('MJ: Template Content Types', 'Markdown', contextUser));
+
+    // If core prompt/template lookup metadata is absent (e.g. minimal unit test mocks),
+    // skip prompt seeding gracefully without failing agent creation.
+    if (!promptTypeID) {
+        return;
+    }
+
+    const modelCache = new Map<string, string | undefined>();
+    const vendorCache = new Map<string, string | undefined>();
+    const actionCache = new Map<string, string | undefined>();
+
+    const resolveCachedId = async (
+        cache: Map<string, string | undefined>,
+        entityName: string,
+        name: string,
+    ): Promise<string | undefined> => {
+        if (cache.has(name)) {
+            return cache.get(name);
+        }
+        const id = await lookupId(entityName, name, contextUser);
+        cache.set(name, id);
+        return id;
+    };
+
+    for (const spec of SKIP_AGENT_PROMPT_SPECS) {
+        // 1. Template
+        const existingTemplate = await rv.RunView<MJTemplateEntity>(
+            {
+                EntityName: 'MJ: Templates',
+                ExtraFilter: `ID='${spec.templateId}'`,
+                MaxRows: 1,
+                ResultType: 'entity_object',
+            },
+            contextUser,
+        );
+        if (!existingTemplate.Success || !existingTemplate.Results?.length) {
+            const tpl = await provider.GetEntityObject<MJTemplateEntity>('MJ: Templates', contextUser);
+            tpl.NewRecord();
+            tpl.ID = spec.templateId;
+            tpl.Name = spec.promptName;
+            tpl.Description = spec.promptDescription;
+            tpl.UserID = contextUser.ID;
+            tpl.IsActive = true;
+            if (!(await tpl.Save())) {
+                LogError(`[skip-client] Failed to create Template "${spec.promptName}": ${tpl.LatestResult?.Message ?? 'unknown error'}`);
+                continue;
+            }
+        }
+
+        // 2. Template Content
+        if (templateContentTypeID) {
+            const existingContent = await rv.RunView<MJTemplateContentEntity>(
+                {
+                    EntityName: 'MJ: Template Contents',
+                    ExtraFilter: `ID='${spec.templateContentId}' OR TemplateID='${spec.templateId}'`,
+                    MaxRows: 1,
+                    ResultType: 'entity_object',
+                },
+                contextUser,
+            );
+            if (existingContent.Success && existingContent.Results?.length) {
+                const contentEntity = existingContent.Results[0];
+                if (contentEntity.TemplateText !== spec.templateText || !contentEntity.IsActive) {
+                    contentEntity.TemplateText = spec.templateText;
+                    contentEntity.IsActive = true;
+                    await contentEntity.Save();
+                }
+            } else {
+                const contentEntity = await provider.GetEntityObject<MJTemplateContentEntity>('MJ: Template Contents', contextUser);
+                contentEntity.NewRecord();
+                contentEntity.ID = spec.templateContentId;
+                contentEntity.TemplateID = spec.templateId;
+                contentEntity.TypeID = templateContentTypeID;
+                contentEntity.TemplateText = spec.templateText;
+                contentEntity.Priority = 1;
+                contentEntity.IsActive = true;
+                await contentEntity.Save();
+            }
+        }
+
+        // 3. AI Prompt
+        const existingPrompt = await rv.RunView<MJAIPromptEntity>(
+            {
+                EntityName: 'MJ: AI Prompts',
+                ExtraFilter: `ID='${spec.promptId}'`,
+                MaxRows: 1,
+                ResultType: 'entity_object',
+            },
+            contextUser,
+        );
+        if (existingPrompt.Success && existingPrompt.Results?.length) {
+            const promptEntity = existingPrompt.Results[0];
+            let promptChanged = false;
+            if (promptEntity.Status !== 'Active') {
+                promptEntity.Status = 'Active';
+                promptChanged = true;
+            }
+            if (promptEntity.TemplateID?.toUpperCase() !== spec.templateId.toUpperCase()) {
+                promptEntity.TemplateID = spec.templateId;
+                promptChanged = true;
+            }
+            if (promptChanged) {
+                await promptEntity.Save();
+            }
+        } else {
+            const promptEntity = await provider.GetEntityObject<MJAIPromptEntity>('MJ: AI Prompts', contextUser);
+            promptEntity.NewRecord();
+            promptEntity.ID = spec.promptId;
+            promptEntity.Name = spec.promptName;
+            promptEntity.Description = spec.promptDescription;
+            promptEntity.TemplateID = spec.templateId;
+            promptEntity.TypeID = promptTypeID;
+            if (promptCategoryID) {
+                promptEntity.CategoryID = promptCategoryID;
+            }
+            promptEntity.Status = 'Active';
+            promptEntity.PromptRole = 'System';
+            promptEntity.PromptPosition = 'First';
+            promptEntity.ResponseFormat = 'Any';
+            promptEntity.OutputType = 'string';
+            if (await promptEntity.Save()) {
+                log(`✓ Created AI Prompt "${spec.promptName}".`);
+            } else {
+                LogError(`[skip-client] Failed to create AI Prompt "${spec.promptName}": ${promptEntity.LatestResult?.Message ?? 'unknown error'}`);
+                continue;
+            }
+        }
+
+        // 4. AI Agent Prompt link
+        const existingAgentPrompt = await rv.RunView<MJAIAgentPromptEntity>(
+            {
+                EntityName: 'MJ: AI Agent Prompts',
+                ExtraFilter: `ID='${spec.agentPromptId}' OR (AgentID='${spec.agentId}' AND PromptID='${spec.promptId}')`,
+                MaxRows: 1,
+                ResultType: 'entity_object',
+            },
+            contextUser,
+        );
+        if (existingAgentPrompt.Success && existingAgentPrompt.Results?.length) {
+            const ap = existingAgentPrompt.Results[0];
+            if (ap.Status !== 'Active') {
+                ap.Status = 'Active';
+                await ap.Save();
+            }
+        } else {
+            const ap = await provider.GetEntityObject<MJAIAgentPromptEntity>('MJ: AI Agent Prompts', contextUser);
+            ap.NewRecord();
+            ap.ID = spec.agentPromptId;
+            ap.AgentID = spec.agentId;
+            ap.PromptID = spec.promptId;
+            ap.ExecutionOrder = 0;
+            ap.Status = 'Active';
+            await ap.Save();
+        }
+
+        // 5. AI Prompt Models (with fallback priorities)
+        for (const modelSpec of spec.models) {
+            const modelID = await resolveCachedId(modelCache, 'MJ: AI Models', modelSpec.modelName);
+            if (!modelID) {
+                continue;
+            }
+            const vendorID = await resolveCachedId(vendorCache, 'MJ: AI Vendors', modelSpec.vendorName);
+            const existingPM = await rv.RunView<MJAIPromptModelEntity>(
+                {
+                    EntityName: 'MJ: AI Prompt Models',
+                    ExtraFilter: `ID='${modelSpec.id}' OR (PromptID='${spec.promptId}' AND ModelID='${modelID}')`,
+                    MaxRows: 1,
+                    ResultType: 'entity_object',
+                },
+                contextUser,
+            );
+            if (!existingPM.Success || !existingPM.Results?.length) {
+                const pm = await provider.GetEntityObject<MJAIPromptModelEntity>('MJ: AI Prompt Models', contextUser);
+                pm.NewRecord();
+                pm.ID = modelSpec.id;
+                pm.PromptID = spec.promptId;
+                pm.ModelID = modelID;
+                if (vendorID) {
+                    pm.VendorID = vendorID;
+                }
+                pm.Priority = modelSpec.priority;
+                pm.Status = 'Active';
+                await pm.Save();
+            }
+        }
+
+        // 6. AI Agent Actions
+        for (const actionSpec of spec.actions) {
+            const actionID = await resolveCachedId(actionCache, 'MJ: Actions', actionSpec.actionName);
+            if (!actionID) {
+                continue;
+            }
+            const existingAA = await rv.RunView<MJAIAgentActionEntity>(
+                {
+                    EntityName: 'MJ: AI Agent Actions',
+                    ExtraFilter: `ID='${actionSpec.id}' OR (AgentID='${spec.agentId}' AND ActionID='${actionID}')`,
+                    MaxRows: 1,
+                    ResultType: 'entity_object',
+                },
+                contextUser,
+            );
+            if (existingAA.Success && existingAA.Results?.length) {
+                const aa = existingAA.Results[0];
+                if (aa.Status !== 'Active') {
+                    aa.Status = 'Active';
+                    await aa.Save();
+                }
+            } else {
+                const aa = await provider.GetEntityObject<MJAIAgentActionEntity>('MJ: AI Agent Actions', contextUser);
+                aa.NewRecord();
+                aa.ID = actionSpec.id;
+                aa.AgentID = spec.agentId;
+                aa.ActionID = actionID;
+                aa.Status = 'Active';
+                await aa.Save();
+            }
         }
     }
 }

@@ -17,3 +17,4 @@
  */
 export * from './skip-config.js';
 export * from './skip-records.js';
+export * from './skip-local-prompts.js';

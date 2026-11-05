@@ -20,11 +20,16 @@ import {
     ExecuteAgentParams,
     AgentConfiguration,
     BaseAgentNextStep,
+    AgentResponseForm,
 } from '@memberjunction/ai-core-plus';
 import { RegisterClass, IsValidUUID } from '@memberjunction/global';
 import { LogStatus, LogError, RunView, RunQuery, UserInfo } from '@memberjunction/core';
 import { AIEngine } from '@memberjunction/aiengine';
-import { SKIP_AGENT_ID, SKIP_COMPONENT_BUILDER_AGENT_ID } from '@askskip/core';
+import {
+    SKIP_AGENT_ID,
+    SKIP_COMPONENT_BUILDER_AGENT_ID,
+    BUILD_REUSABLE_COMPONENT_LABEL,
+} from '@askskip/core';
 import { SkipProxyAgent, SkipAgentContext } from './skip-agent.js';
 
 export const SKIP_COMPONENT_BUILDER_NAME = 'Skip: Component Builder';
@@ -32,6 +37,33 @@ export const SKIP_DATA_ANSWERER_NAME = 'Skip: Data Answerer';
 export const SKIP_ANALYST_NAME = 'Skip: Analyst';
 export const SKIP_SCHEMA_GUIDE_NAME = 'Skip: Schema Guide';
 export const SKIP_VISUALIZER_NAME = 'Skip: Visualizer';
+
+export type SkipCompactRouteKey =
+    | 'component_builder'
+    | 'data_answerer'
+    | 'analyst'
+    | 'schema_guide'
+    | 'visualizer'
+    | 'direct_reply';
+
+export interface SkipCompactRouterEnvelope {
+    route: SkipCompactRouteKey;
+    confidence?: 'high' | 'medium' | 'low';
+    reasoning?: string;
+    reply?: string | null;
+}
+
+/**
+ * Validated query and summary context carried when a local answer is promoted
+ * to `Skip: Component Builder` via `"Build a reusable component for this"`.
+ */
+export interface SkipPromotionContext {
+    queryName?: string;
+    sql?: string;
+    title?: string;
+    summary?: string;
+    sourceSubAgent?: string | null;
+}
 
 /**
  * Compact deterministic state block injected into the router prompt as
@@ -149,6 +181,128 @@ export function isExplicitBuildCancellation(messageText: string | null | undefin
     return /^\s*(cancel|stop|never\s*mind|nevermind|forget\s+it|abandon)\b/i.test(messageText);
 }
 
+/**
+ * Map a compact router key (`component_builder`, `data_answerer`, etc.) to the
+ * canonical MJ sub-agent name, or `null` for `direct_reply`.
+ */
+export function mapCompactRouteToSubAgentName(route: SkipCompactRouteKey): string | null {
+    switch (route) {
+        case 'component_builder':
+            return SKIP_COMPONENT_BUILDER_NAME;
+        case 'data_answerer':
+            return SKIP_DATA_ANSWERER_NAME;
+        case 'analyst':
+            return SKIP_ANALYST_NAME;
+        case 'schema_guide':
+            return SKIP_SCHEMA_GUIDE_NAME;
+        case 'visualizer':
+            return SKIP_VISUALIZER_NAME;
+        case 'direct_reply':
+            return null;
+        default:
+            return null;
+    }
+}
+
+/**
+ * Parse a compact router JSON envelope (`{ route, confidence, reasoning, reply }`)
+ * if the model returned one instead of a full LoopAgentResponse envelope.
+ */
+export function parseCompactRouterEnvelope(rawText: string | null | undefined): SkipCompactRouterEnvelope | null {
+    if (!rawText || typeof rawText !== 'string') {
+        return null;
+    }
+    const trimmed = rawText.trim();
+    const jsonCandidate = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    if (!jsonCandidate.startsWith('{') || !jsonCandidate.endsWith('}')) {
+        return null;
+    }
+    try {
+        const parsed = JSON.parse(jsonCandidate) as Record<string, unknown>;
+        const route = parsed.route;
+        if (
+            route === 'component_builder' ||
+            route === 'data_answerer' ||
+            route === 'analyst' ||
+            route === 'schema_guide' ||
+            route === 'visualizer' ||
+            route === 'direct_reply'
+        ) {
+            return {
+                route,
+                confidence:
+                    parsed.confidence === 'high' || parsed.confidence === 'medium' || parsed.confidence === 'low'
+                        ? parsed.confidence
+                        : undefined,
+                reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : undefined,
+                reply: typeof parsed.reply === 'string' ? parsed.reply : null,
+            };
+        }
+    } catch {
+        // Not valid JSON
+    }
+    return null;
+}
+
+/**
+ * Extract validated query and summary promotion context from the current payload and
+ * conversation history when a local answer is promoted to `Skip: Component Builder`.
+ */
+export function extractPromotionContext(
+    params: ExecuteAgentParams,
+    routerState: SkipRouterState,
+): SkipPromotionContext | null {
+    const payload =
+        params.payload && typeof params.payload === 'object' && !Array.isArray(params.payload)
+            ? (params.payload as Record<string, unknown>)
+            : null;
+
+    const queryName = typeof payload?.queryName === 'string' ? payload.queryName.trim() : undefined;
+    const sql = typeof payload?.sql === 'string' ? payload.sql.trim() : undefined;
+    const title = typeof payload?.title === 'string' ? payload.title.trim() : undefined;
+    const interpretation =
+        typeof payload?.interpretation === 'string' ? payload.interpretation.trim() : undefined;
+
+    if (!queryName && !sql && !title && !interpretation && !routerState.lastDelegate) {
+        return null;
+    }
+
+    return {
+        ...(queryName ? { queryName } : {}),
+        ...(sql ? { sql } : {}),
+        ...(title ? { title } : {}),
+        ...(interpretation ? { summary: interpretation } : {}),
+        sourceSubAgent: routerState.lastDelegate,
+    };
+}
+
+/**
+ * Build a standard `AgentResponseForm` offering one-click escalation from a local answer
+ * to `Skip: Component Builder` (`"Build a reusable component for this"`).
+ */
+export function buildComponentPromotionResponseForm(
+    title = 'Want to turn this into an interactive component?',
+): AgentResponseForm {
+    return {
+        title,
+        questions: [
+            {
+                id: 'escalate',
+                label: 'Next step',
+                type: {
+                    type: 'buttongroup',
+                    options: [
+                        {
+                            value: BUILD_REUSABLE_COMPONENT_LABEL,
+                            label: BUILD_REUSABLE_COMPONENT_LABEL,
+                        },
+                    ],
+                },
+            },
+        ],
+    };
+}
+
 @RegisterClass(BaseAgent, 'SkipLocalAgent')
 export class SkipLocalAgent extends BaseAgent {
     /**
@@ -211,6 +365,13 @@ export class SkipLocalAgent extends BaseAgent {
 
         // Fast-path 2: Explicit escalation trigger ("Build a reusable component for this" or [component])
         if (isExplicitComponentEscalation(latestUserText)) {
+            const promotionContext = extractPromotionContext(params, routerState);
+            if (promotionContext) {
+                params.data = {
+                    ...(params.data || {}),
+                    promotionContext,
+                };
+            }
             LogStatus(
                 `[SkipLocalAgent] Fast-path routing to "${SKIP_COMPONENT_BUILDER_NAME}" (explicit component escalation trigger).`,
             );
@@ -259,6 +420,112 @@ export class SkipLocalAgent extends BaseAgent {
             config,
             'Fallback delegation to Skip: Component Builder.',
         );
+    }
+
+    /**
+     * Override `executeNextStep` to enforce the 6.1.6 delegation reproduction safeguards:
+     * 1. When executing a `Sub-Agent` step, strip `templateParameters` (preventing V7
+     *    `conversationId` FK crashes), force `terminate = false` (preventing the
+     *    `taskComplete: true` trap), and force `terminateAfter = true` for `Skip: *` sub-agents.
+     * 2. When a prompt step returns a compact router JSON envelope
+     *    (`{ route, confidence, reasoning, reply }`), convert it into the corresponding
+     *    `Sub-Agent` step or `direct_reply` `Success` step.
+     */
+    protected override async executeNextStep<P = any>(
+        params: ExecuteAgentParams,
+        config: AgentConfiguration,
+        previousDecision: BaseAgentNextStep<P> | null,
+        stepCount = 0,
+    ): Promise<BaseAgentNextStep<P>> {
+        if (previousDecision) {
+            previousDecision = this.sanitizeRouterDecision(params, previousDecision);
+        }
+
+        const nextDecision = await super.executeNextStep<P>(
+            params,
+            config,
+            previousDecision,
+            stepCount,
+        );
+
+        return this.sanitizeRouterDecision(params, nextDecision);
+    }
+
+    /**
+     * Sanitize a router step decision:
+     * - Converts compact router JSON envelopes (`{ route, confidence, reasoning, reply }`)
+     *   into standard MJ `Sub-Agent` or `Success` steps.
+     * - Strips `subAgent.templateParameters` so LLM-generated template parameters can never
+     *   overwrite `params.data.conversationId` (V7).
+     * - Forces `terminate = false` and `subAgent.terminateAfter = true` on `Sub-Agent` steps
+     *   targeting `Skip: *` sub-agents (`taskComplete` trap).
+     */
+    public sanitizeRouterDecision<P = any>(
+        params: ExecuteAgentParams,
+        decision: BaseAgentNextStep<P>,
+    ): BaseAgentNextStep<P> {
+        if (!decision) {
+            return decision;
+        }
+
+        // 1. If a Sub-Agent request is present (even if LoopAgentType set step='Success' due to taskComplete=true)
+        if (decision.subAgent?.name) {
+            const subAgentName = decision.subAgent.name.trim();
+            const isSkipSubAgent = subAgentName.startsWith('Skip:');
+            const cleanedSubAgent = {
+                ...decision.subAgent,
+                name: subAgentName,
+                message:
+                    decision.subAgent.message?.trim() ||
+                    this.getLatestUserMessageText(params) ||
+                    `Delegate to ${subAgentName}`,
+                terminateAfter: isSkipSubAgent ? true : Boolean(decision.subAgent.terminateAfter),
+            };
+            // Strip templateParameters so a model-supplied conversationId can never break FK_AIAgentRun_ConversationID (V7)
+            delete (cleanedSubAgent as { templateParameters?: Record<string, unknown> }).templateParameters;
+
+            if (decision.step === 'Sub-Agent' || (decision.step === 'Success' && decision.terminate)) {
+                return {
+                    ...decision,
+                    step: 'Sub-Agent',
+                    terminate: false,
+                    subAgent: cleanedSubAgent,
+                };
+            }
+        }
+
+        // 2. Check if the router model returned a compact `{ route, confidence, reasoning, reply }` JSON envelope
+        if (decision.step === 'Success' || decision.step === 'Retry') {
+            const candidateText = decision.message || decision.errorMessage;
+            const compact = parseCompactRouterEnvelope(candidateText);
+            if (compact) {
+                const targetSubAgent = mapCompactRouteToSubAgentName(compact.route);
+                if (!targetSubAgent) {
+                    return {
+                        step: 'Success',
+                        terminate: true,
+                        reasoning: compact.reasoning || 'Direct reply from Skip router.',
+                        message: compact.reply || 'How can I help you with your data or components?',
+                        previousPayload: decision.previousPayload ?? params.payload,
+                        newPayload: decision.newPayload ?? params.payload,
+                    };
+                }
+                return {
+                    step: 'Sub-Agent',
+                    terminate: false,
+                    reasoning: compact.reasoning || `Routing to ${targetSubAgent}.`,
+                    subAgent: {
+                        name: targetSubAgent,
+                        message: this.getLatestUserMessageText(params) || `Delegate to ${targetSubAgent}`,
+                        terminateAfter: true,
+                    },
+                    previousPayload: decision.previousPayload ?? params.payload,
+                    newPayload: decision.newPayload ?? params.payload,
+                };
+            }
+        }
+
+        return decision;
     }
 
     /**

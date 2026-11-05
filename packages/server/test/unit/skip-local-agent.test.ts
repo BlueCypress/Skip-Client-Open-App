@@ -86,15 +86,21 @@ import {
     SKIP_SCHEMA_GUIDE_AGENT_ID,
     SKIP_VISUALIZER_AGENT_ID,
     SKIP_SUB_AGENTS,
+    SKIP_AGENT_PROMPT_SPECS,
+    BUILD_REUSABLE_COMPONENT_LABEL,
     ensureSkipRecords,
     removeSkipRecords,
 } from '@askskip/core';
 import {
     SkipLocalAgent,
     SKIP_COMPONENT_BUILDER_NAME,
+    SKIP_DATA_ANSWERER_NAME,
     detectPayloadStage,
     isExplicitComponentEscalation,
     isExplicitBuildCancellation,
+    parseCompactRouterEnvelope,
+    extractPromotionContext,
+    buildComponentPromotionResponseForm,
 } from '../../src/skip-local-agent.js';
 import { SkipProxyAgent } from '../../src/skip-agent.js';
 import { SkipSDK } from '../../src/skip-sdk.js';
@@ -196,6 +202,9 @@ describe('ensureSkipRecords & removeSkipRecords (SkipLocalAgent + 5 sub-agents)'
             expect(sub.ParentID).toBe(SKIP_AGENT_ID);
             expect(sub.ExposeAsAction).toBe(false);
             expect(sub.InvocationMode).toBe('Sub-Agent');
+            expect(sub.MessageMode).toBe('All');
+            expect(sub.ModelSelectionMode).toBe('Agent');
+            expect(sub.ChatHandlingOption).toBeNull();
             expect(sub.Status).toBe('Active');
         }
         expect(createdAgents[0].DriverClass).toBe('SkipProxyAgent');
@@ -205,7 +214,73 @@ describe('ensureSkipRecords & removeSkipRecords (SkipLocalAgent + 5 sub-agents)'
         expect(createdAgents[4].DefaultArtifactTypeID).toBe('artifact-type-svg');
     });
 
-    it('deletes sub-agents before deleting the parent Skip agent in removeSkipRecords', async () => {
+    it('seeds prompts, templates, model bindings, and action bindings when MJ: AI Prompt Types is present', async () => {
+        const createdByEntity = new Map<string, Array<Record<string, unknown>>>();
+        const provider = {
+            GetEntityObject: vi.fn().mockImplementation(async (entityName: string) => {
+                const entity: Record<string, unknown> = {
+                    NewRecord: vi.fn(),
+                    Save: vi.fn().mockResolvedValue(true),
+                };
+                const list = createdByEntity.get(entityName) ?? [];
+                list.push(entity);
+                createdByEntity.set(entityName, list);
+                return entity;
+            }),
+        } as unknown as IMetadataProvider;
+
+        runViewMock.mockImplementation(async (params: { EntityName: string; ExtraFilter: string }) => {
+            if (params.EntityName === 'MJ: AI Agent Types') {
+                return { Success: true, Results: [{ ID: 'loop-type-id' }] };
+            }
+            if (params.EntityName === 'MJ: AI Agent Categories') {
+                return { Success: true, Results: [{ ID: 'assistant-cat-id' }] };
+            }
+            if (params.EntityName === 'MJ: Artifact Types') {
+                return { Success: true, Results: [{ ID: 'art-type-id' }] };
+            }
+            if (params.EntityName === 'MJ: AI Prompt Types') {
+                return { Success: true, Results: [{ ID: 'chat-prompt-type-id' }] };
+            }
+            if (params.EntityName === 'MJ: AI Prompt Categories') {
+                return { Success: true, Results: [{ ID: 'sys-prompt-cat-id' }] };
+            }
+            if (params.EntityName === 'MJ: Template Content Types') {
+                return { Success: true, Results: [{ ID: 'text-content-type-id' }] };
+            }
+            if (params.EntityName === 'MJ: AI Models') {
+                return { Success: true, Results: [{ ID: 'model-id' }] };
+            }
+            if (params.EntityName === 'MJ: AI Vendors') {
+                return { Success: true, Results: [{ ID: 'vendor-id' }] };
+            }
+            if (params.EntityName === 'MJ: Actions') {
+                return { Success: true, Results: [{ ID: 'action-id' }] };
+            }
+            return { Success: true, Results: [] };
+        });
+
+        await ensureSkipRecords(provider, USER, () => {}, undefined);
+
+        expect(createdByEntity.get('MJ: Templates')).toHaveLength(5);
+        expect(createdByEntity.get('MJ: Template Contents')).toHaveLength(5);
+        expect(createdByEntity.get('MJ: AI Prompts')).toHaveLength(5);
+        expect(createdByEntity.get('MJ: AI Agent Prompts')).toHaveLength(5);
+        expect((createdByEntity.get('MJ: AI Prompt Models') ?? []).length).toBeGreaterThanOrEqual(20);
+        // 6 actions (Data Answerer) + 4 (Analyst) + 5 (Schema Guide) + 3 (Visualizer) = 18
+        expect(createdByEntity.get('MJ: AI Agent Actions')).toHaveLength(18);
+
+        // Verify all prompt templates include safety or escalation guidance
+        for (const spec of SKIP_AGENT_PROMPT_SPECS) {
+            expect(spec.templateText.length).toBeGreaterThan(200);
+        }
+        const dataAnswererSpec = SKIP_AGENT_PROMPT_SPECS.find((s) => s.agentName === 'Skip: Data Answerer')!;
+        expect(dataAnswererSpec.templateText).toContain('MaxRows');
+        expect(dataAnswererSpec.templateText).toContain(BUILD_REUSABLE_COMPONENT_LABEL);
+        expect(dataAnswererSpec.actions.map((a) => a.actionName)).toContain('Get Graph Context');
+    });
+
+    it('deletes prompt/action links and sub-agents before deleting the parent Skip agent in removeSkipRecords', async () => {
         const filtersCalled: string[] = [];
         runViewMock.mockImplementation(async (params: { EntityName: string; ExtraFilter: string }) => {
             filtersCalled.push(`${params.EntityName}: ${params.ExtraFilter}`);
@@ -214,9 +289,10 @@ describe('ensureSkipRecords & removeSkipRecords (SkipLocalAgent + 5 sub-agents)'
 
         await removeSkipRecords(USER, () => {});
 
-        expect(filtersCalled[0]).toContain(`ParentID='${SKIP_AGENT_ID}'`);
-        expect(filtersCalled[0]).toContain(SKIP_COMPONENT_BUILDER_AGENT_ID);
-        expect(filtersCalled[1]).toContain(`ID='${SKIP_AGENT_ID}'`);
+        const subAgentDeleteIdx = filtersCalled.findIndex((f) => f.includes(`ParentID='${SKIP_AGENT_ID}'`));
+        const parentDeleteIdx = filtersCalled.findIndex((f) => f.includes('DriverClass IN'));
+        expect(subAgentDeleteIdx).toBeGreaterThanOrEqual(0);
+        expect(parentDeleteIdx).toBeGreaterThan(subAgentDeleteIdx);
     });
 });
 
@@ -239,6 +315,113 @@ describe('SkipLocalAgent helper functions', () => {
         expect(isExplicitBuildCancellation('cancel')).toBe(true);
         expect(isExplicitBuildCancellation('never mind, how many members?')).toBe(true);
         expect(isExplicitBuildCancellation('approve the PRD')).toBe(false);
+    });
+
+    it('parses compact router JSON envelopes and builds promotion context / response form', () => {
+        const envelope = parseCompactRouterEnvelope(
+            '```json\n{"route":"data_answerer","confidence":"high","reasoning":"Count question","reply":null}\n```',
+        );
+        expect(envelope).toEqual({
+            route: 'data_answerer',
+            confidence: 'high',
+            reasoning: 'Count question',
+            reply: null,
+        });
+
+        const params: ExecuteAgentParams = {
+            agent: { ID: SKIP_AGENT_ID, Name: 'Skip' } as never,
+            contextUser: USER,
+            payload: {
+                title: 'Active Members by Tier',
+                queryName: 'GetActiveMembersByTier',
+                sql: 'SELECT Tier, COUNT(*) FROM vwMembers GROUP BY Tier',
+                interpretation: 'Gold tier accounts for 62% of active members.',
+            },
+            conversationMessages: [{ role: 'user', content: BUILD_REUSABLE_COMPONENT_LABEL }],
+        };
+        const promotion = extractPromotionContext(params, {
+            attachedComponent: null,
+            componentRoster: [],
+            hasDataSnapshot: false,
+            pendingBrainQuestion: null,
+            payloadStage: 'none',
+            lastDelegate: SKIP_DATA_ANSWERER_NAME,
+        });
+        expect(promotion).toEqual({
+            title: 'Active Members by Tier',
+            queryName: 'GetActiveMembersByTier',
+            sql: 'SELECT Tier, COUNT(*) FROM vwMembers GROUP BY Tier',
+            summary: 'Gold tier accounts for 62% of active members.',
+            sourceSubAgent: SKIP_DATA_ANSWERER_NAME,
+        });
+
+        const form = buildComponentPromotionResponseForm();
+        expect(form.questions[0].type).toMatchObject({
+            type: 'buttongroup',
+            options: [{ value: BUILD_REUSABLE_COMPONENT_LABEL, label: BUILD_REUSABLE_COMPONENT_LABEL }],
+        });
+    });
+
+    it('sanitizes Sub-Agent decisions: strips templateParameters (V7), rescues taskComplete=true, and converts compact route JSON', () => {
+        const localAgent = new SkipLocalAgent();
+        const params: ExecuteAgentParams = {
+            agent: { ID: SKIP_AGENT_ID, Name: 'Skip' } as never,
+            contextUser: USER,
+            conversationMessages: [{ role: 'user', content: 'How many active members?' }],
+        };
+
+        // 1. V7 + taskComplete=true rescue
+        const rawDecision = {
+            step: 'Success',
+            terminate: true,
+            subAgent: {
+                name: SKIP_DATA_ANSWERER_NAME,
+                message: '',
+                terminateAfter: false,
+                templateParameters: {
+                    conversationId: '00000000-0000-0000-0000-000000000000',
+                },
+            },
+        } as unknown as BaseAgentNextStep;
+
+        const sanitized = localAgent.sanitizeRouterDecision(params, rawDecision);
+        expect(sanitized.step).toBe('Sub-Agent');
+        expect(sanitized.terminate).toBe(false);
+        expect(sanitized.subAgent?.name).toBe(SKIP_DATA_ANSWERER_NAME);
+        expect(sanitized.subAgent?.terminateAfter).toBe(true);
+        expect(sanitized.subAgent?.message).toBe('How many active members?');
+        expect('templateParameters' in (sanitized.subAgent as Record<string, unknown>)).toBe(false);
+
+        // 2. Compact router JSON -> Sub-Agent step
+        const compactSubAgentDecision = localAgent.sanitizeRouterDecision(params, {
+            step: 'Success',
+            terminate: true,
+            message: JSON.stringify({
+                route: 'data_answerer',
+                confidence: 'high',
+                reasoning: 'Population count question',
+                reply: null,
+            }),
+        } as BaseAgentNextStep);
+        expect(compactSubAgentDecision.step).toBe('Sub-Agent');
+        expect(compactSubAgentDecision.terminate).toBe(false);
+        expect(compactSubAgentDecision.subAgent?.name).toBe(SKIP_DATA_ANSWERER_NAME);
+        expect(compactSubAgentDecision.subAgent?.terminateAfter).toBe(true);
+
+        // 3. Compact router JSON -> direct_reply Success step
+        const compactDirectDecision = localAgent.sanitizeRouterDecision(params, {
+            step: 'Success',
+            terminate: true,
+            message: JSON.stringify({
+                route: 'direct_reply',
+                confidence: 'high',
+                reasoning: 'User said thanks',
+                reply: 'You are welcome!',
+            }),
+        } as BaseAgentNextStep);
+        expect(compactDirectDecision.step).toBe('Success');
+        expect(compactDirectDecision.terminate).toBe(true);
+        expect(compactDirectDecision.message).toBe('You are welcome!');
     });
 });
 
