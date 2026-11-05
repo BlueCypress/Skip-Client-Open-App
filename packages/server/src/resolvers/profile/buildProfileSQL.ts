@@ -69,6 +69,29 @@ export function buildProfileSQL(
     const hoisted = hoistIntoProfileCTE(baseSQL, dialect);
     if (!hoisted) return null;
 
+    const planned = planProfileAggregates(columns, dialect);
+    if (!planned) return null;
+
+    const sql = `${hoisted}\nSELECT\n    ${planned.projections.join(',\n    ')}\nFROM ${dialect.QuoteIdentifier(PROFILE_CTE)}`;
+    if (containsWriteStatement(sql, dialect)) return null;
+
+    return { sql, totalRowsAlias: TOTAL_ROWS_ALIAS, aggregates: planned.aggregates, skipped: planned.skipped };
+}
+
+/** Which statistics the profile computes for each column, with the SQL that computes each one. */
+export interface ProfileAggregatePlan {
+    totalRowsAlias: string;
+    aggregates: ProfileAggregate[];
+    /** `<expression> AS <alias>`, `COUNT(*)` first, in `aggregates` order after it. */
+    projections: string[];
+    skipped: { name: string; reason: string }[];
+}
+
+/**
+ * Decides every statistic of the profile, for the SQL aggregate pass and for the in-memory one alike, so both report
+ * the same statistics under the same aliases. Returns `null` when no column can be described.
+ */
+export function planProfileAggregates(columns: ProfileColumn[], dialect: SQLDialect): ProfileAggregatePlan | null {
     const skipped: { name: string; reason: string }[] = [];
     const aggregates: ProfileAggregate[] = [];
     const projections: string[] = [`COUNT(*) AS ${dialect.QuoteColumnAlias(TOTAL_ROWS_ALIAS)}`];
@@ -107,11 +130,7 @@ export function buildProfileSQL(
     });
 
     if (aggregates.length === 0) return null;
-
-    const sql = `${hoisted}\nSELECT\n    ${projections.join(',\n    ')}\nFROM ${dialect.QuoteIdentifier(PROFILE_CTE)}`;
-    if (containsWriteStatement(sql, dialect)) return null;
-
-    return { sql, totalRowsAlias: TOTAL_ROWS_ALIAS, aggregates, skipped };
+    return { totalRowsAlias: TOTAL_ROWS_ALIAS, aggregates, projections, skipped };
 }
 
 /**
