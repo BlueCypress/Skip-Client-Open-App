@@ -26,12 +26,24 @@ import {
     SkipRetryAction,
     SkipErrorDetail,
     SkipClientCapability,
+    SkipMetadataSection,
+    SkipMetadataRef,
+    SkipCanonMetadata,
+    SkipCanonConceptSummary,
+    SkipCanonEdgeSummary,
 } from '@askskip/types';
 import { createRequire } from 'node:module';
 import { isValidUUID, requireValidUUID } from './uuid-guard.js';
 import { noteBrainContact } from './registry-reconciler.js';
+import {
+    CanonicalizedMetadataSection,
+    canonicalizeMetadataSection,
+    brainSupportsMetadataCache,
+    recordBrainCapabilities,
+} from './metadata-canonicalizer.js';
 import { DataContext } from '@memberjunction/data-context';
 import { IMetadataProvider, UserInfo, LogStatus, LogError, Metadata, RunQuery, RunView, EntityInfo, BaseEntity, BaseEntityEvent, AllMetadata } from '@memberjunction/core';
+import * as coreEntitiesModule from '@memberjunction/core-entities';
 import { MJConversationDetailEntity, QueryEngine } from '@memberjunction/core-entities';
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
@@ -64,7 +76,10 @@ type MJEventStream = ReturnType<MJGlobal['GetEventListener']>;
 const SKIP_SDK_VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
 /** Features this SDK acts on, sent to Skip as `clientCapabilities`. */
-const CLIENT_CAPABILITIES: string[] = [SkipClientCapability.ArtifactDirective];
+const CLIENT_CAPABILITIES: string[] = [
+    SkipClientCapability.ArtifactDirective,
+    SkipClientCapability.MetadataCache,
+];
 
 /**
  * Configuration options for Skip SDK
@@ -175,11 +190,34 @@ export interface SkipCallOptions {
     externalReferenceID?: string;
 
     /**
+     * Include MJ Canon metadata (concepts, governed edges, rendered domain document) in request
+     */
+    includeCanon?: boolean;
+
+    /**
      * Internal flag to prevent infinite retry loops during callback key re-provisioning.
      * Set automatically by the SDK — callers should not set this.
      * @internal
      */
     _isCallbackKeyRetry?: boolean;
+
+    /**
+     * Internal flag to prevent infinite retry loops during metadata cache miss resends.
+     * @internal
+     */
+    _isMetadataCacheRetry?: boolean;
+
+    /**
+     * Sections reported missing by Brain on a metadata_cache_miss response.
+     * @internal
+     */
+    _missingMetadataSections?: SkipMetadataSection[];
+
+    /**
+     * Forces full legacy metadata arrays in the request (used as double-miss fallback).
+     * @internal
+     */
+    _forceLegacyMetadataPayload?: boolean;
 }
 
 /**
@@ -304,6 +342,13 @@ export class SkipSDK {
      */
     private static __entityCache: EntityInfo[] | null = null;
 
+    /** Canonicalized JSON + SHA-256 ref for each metadata section. */
+    private static __canonicalEntitiesCache: CanonicalizedMetadataSection | null = null;
+    private static __canonicalQueriesCache: CanonicalizedMetadataSection | null = null;
+    private static __canonicalQueryCatalogCache: CanonicalizedMetadataSection | null = null;
+    private static __canonMetadataCache: SkipCanonMetadata | null = null;
+    private static __canonicalCanonCache: CanonicalizedMetadataSection | null = null;
+
     /**
      * When the payload was last built. Read only to report the gap between builds in the build
      * log, which is how an unexpected rebuild gets spotted in a host's log.
@@ -317,6 +362,29 @@ export class SkipSDK {
      * CodeGen, which means a schema change and an MJAPI restart, and the restart clears this cache.
      */
     private static readonly SCOPE_METADATA_ENTITIES: ReadonlySet<string> = new Set(['mj: entities', 'mj: entity fields']);
+
+    /**
+     * Query metadata entities (lowercased) whose runtime writes invalidate the canonicalized
+     * queries and queryCatalog caches.
+     */
+    private static readonly QUERY_METADATA_ENTITIES: ReadonlySet<string> = new Set([
+        'mj: queries',
+        'mj: query fields',
+        'mj: query parameters',
+        'mj: query entities',
+        'mj: query categories',
+    ]);
+
+    /**
+     * Canon metadata entities (lowercased) whose runtime writes invalidate the canonicalized
+     * canon cache.
+     */
+    private static readonly CANON_METADATA_ENTITIES: ReadonlySet<string> = new Set([
+        'mj: concepts',
+        'mj: concept aliases',
+        'mj: graph edges',
+        'mj: graph edge types',
+    ]);
 
     /**
      * The MJGlobal event stream currently subscribed to. Compared by identity, not a boolean,
@@ -460,6 +528,12 @@ export class SkipSDK {
             // here. Fire-and-forget: never delays or fails this request.
             noteBrainContact(options.contextUser);
 
+            // Record any serverCapabilities advertised on the response so subsequent
+            // turns immediately use metadataRefs if Brain supports metadataCache.
+            if (this.config.apiUrl && Array.isArray(finalResponse.serverCapabilities)) {
+                recordBrainCapabilities(this.config.apiUrl, finalResponse.serverCapabilities);
+            }
+
             // Check if Skip itself reported an error (success: false in the response body)
             if (finalResponse.success === false) {
                 const detail = finalResponse.errorDetail;
@@ -484,6 +558,29 @@ export class SkipSDK {
                     LogStatus('[SkipSDK] Callback key invalid — revoking old key and re-provisioning');
                     await resetCallbackKeyProvisioning();
                     return this.chat({ ...options, _isCallbackKeyRetry: true });
+                }
+
+                // Handle metadata cache miss: resend only the missing sections on the first
+                // miss, or fall back to a full inline legacy metadata payload if a second miss
+                // occurs so a cache miss can never fail a user's turn.
+                if (detail?.code === SkipErrorCode.metadata_cache_miss
+                    && detail.retryAction === SkipRetryAction.resend_with_metadata) {
+                    if (!options._isMetadataCacheRetry) {
+                        const missing = detail.missingSections ?? [];
+                        LogStatus(`[SkipSDK] Metadata cache miss for sections [${missing.join(', ')}] — resending missing sections`);
+                        return this.chat({
+                            ...options,
+                            _isMetadataCacheRetry: true,
+                            _missingMetadataSections: missing,
+                        });
+                    }
+                    if (!options._forceLegacyMetadataPayload) {
+                        LogStatus('[SkipSDK] Second metadata cache miss — falling back to full inline metadata payload');
+                        return this.chat({
+                            ...options,
+                            _forceLegacyMetadataPayload: true,
+                        });
+                    }
                 }
 
                 return {
@@ -578,10 +675,13 @@ export class SkipSDK {
             includeQueries = true,
             includeNotes = true,
             includeRequests = false,
+            includeCanon = true,
             forceEntityRefresh = false,
             includeCallbackAuth = true,
             payload,
-            externalReferenceID
+            externalReferenceID,
+            _missingMetadataSections,
+            _forceLegacyMetadataPayload = false,
         } = options;
 
         // Build base request with metadata
@@ -594,7 +694,8 @@ export class SkipSDK {
             includeRequests,
             forceEntityRefresh,
             includeCallbackAuth,
-            { conversationId, requestPhase }
+            { conversationId, requestPhase },
+            includeCanon
         );
 
         // Build artifacts for this conversation
@@ -602,6 +703,39 @@ export class SkipSDK {
 
         // Process messages: filter delegation messages and enrich with metadata
         const processedMessages = this.processMessages(messages);
+
+        const useMetadataCache =
+            !_forceLegacyMetadataPayload &&
+            brainSupportsMetadataCache(this.config.apiUrl || '');
+
+        let metadataRefs: Partial<Record<SkipMetadataSection, SkipMetadataRef>> | undefined;
+        let metadataContent: Partial<Record<SkipMetadataSection, string>> | undefined;
+
+        if (useMetadataCache) {
+            const sections = this.getCanonicalizedSections(
+                baseRequest,
+                includeEntities,
+                includeQueries,
+                includeNotes,
+                includeCanon,
+                forceEntityRefresh,
+            );
+
+            metadataRefs = {};
+            for (const [sec, entry] of Object.entries(sections) as [SkipMetadataSection, CanonicalizedMetadataSection][]) {
+                metadataRefs[sec] = entry.ref;
+            }
+
+            if (_missingMetadataSections && _missingMetadataSections.length > 0) {
+                metadataContent = {};
+                for (const missingSection of _missingMetadataSections) {
+                    const entry = sections[missingSection];
+                    if (entry) {
+                        metadataContent[missingSection] = entry.canonicalJson;
+                    }
+                }
+            }
+        }
 
         // Construct the full Skip API request
         const request: SkipAPIRequest = {
@@ -611,11 +745,14 @@ export class SkipSDK {
             requestPhase,
             artifacts,
             payload, // Pass through payload for incremental artifact building (e.g., PRD in progress)
-            entities: baseRequest.entities || [],
-            queries: baseRequest.queries || [],
-            queryCatalog: baseRequest.queryCatalog,
-            notes: baseRequest.notes,
-            noteTypes: baseRequest.noteTypes,
+            entities: useMetadataCache ? [] : (baseRequest.entities || []),
+            queries: useMetadataCache ? [] : (baseRequest.queries || []),
+            queryCatalog: useMetadataCache ? undefined : baseRequest.queryCatalog,
+            notes: useMetadataCache ? undefined : baseRequest.notes,
+            noteTypes: useMetadataCache ? undefined : baseRequest.noteTypes,
+            canon: useMetadataCache ? undefined : baseRequest.canon,
+            metadataRefs,
+            metadataContent,
             userEmail: baseRequest.userEmail,
             apiKeys: baseRequest.apiKeys,
             callingServerURL: baseRequest.callingServerURL,
@@ -630,6 +767,61 @@ export class SkipSDK {
     }
 
     /**
+     * Computes or reuses cached canonicalized JSON + SHA-256 refs for each active metadata section.
+     */
+    private getCanonicalizedSections(
+        baseRequest: Partial<SkipAPIRequest>,
+        includeEntities: boolean,
+        includeQueries: boolean,
+        includeNotes: boolean,
+        includeCanon: boolean,
+        forceEntityRefresh: boolean,
+    ): Partial<Record<SkipMetadataSection, CanonicalizedMetadataSection>> {
+        const result: Partial<Record<SkipMetadataSection, CanonicalizedMetadataSection>> = {};
+
+        if (includeEntities) {
+            if (!SkipSDK.__canonicalEntitiesCache || forceEntityRefresh) {
+                const entities = baseRequest.entities || [];
+                const canonical = canonicalizeMetadataSection('entities', entities);
+                if (SkipSDK.__entityCache !== null) {
+                    SkipSDK.__canonicalEntitiesCache = canonical;
+                }
+                result.entities = canonical;
+            } else {
+                result.entities = SkipSDK.__canonicalEntitiesCache;
+            }
+        }
+
+        if (includeQueries) {
+            if (!SkipSDK.__canonicalQueriesCache) {
+                SkipSDK.__canonicalQueriesCache = canonicalizeMetadataSection('queries', baseRequest.queries || []);
+            }
+            result.queries = SkipSDK.__canonicalQueriesCache;
+        }
+
+        if (baseRequest.queryCatalog) {
+            if (!SkipSDK.__canonicalQueryCatalogCache) {
+                SkipSDK.__canonicalQueryCatalogCache = canonicalizeMetadataSection('queryCatalog', baseRequest.queryCatalog);
+            }
+            result.queryCatalog = SkipSDK.__canonicalQueryCatalogCache;
+        }
+
+        if (includeNotes) {
+            result.notes = canonicalizeMetadataSection('notes', baseRequest.notes || []);
+            result.noteTypes = canonicalizeMetadataSection('noteTypes', baseRequest.noteTypes || []);
+        }
+
+        if (includeCanon && baseRequest.canon) {
+            if (!SkipSDK.__canonicalCanonCache) {
+                SkipSDK.__canonicalCanonCache = canonicalizeMetadataSection('canon', baseRequest.canon);
+            }
+            result.canon = SkipSDK.__canonicalCanonCache;
+        }
+
+        return result;
+    }
+
+    /**
      * Build base request with metadata, API keys, and callback auth
      */
     private async buildBaseRequest(
@@ -641,7 +833,8 @@ export class SkipSDK {
         includeRequests: boolean,
         forceEntityRefresh: boolean,
         includeCallbackAuth: boolean,
-        additionalTokenInfo: any = {}
+        additionalTokenInfo: any = {},
+        includeCanon: boolean = true
     ): Promise<Partial<SkipAPIRequest>> {
         const entities = includeEntities ? this.buildEntities(forceEntityRefresh) : [];
         const queries = includeQueries ? this.buildQueries() : [];
@@ -649,6 +842,7 @@ export class SkipSDK {
         // regardless of whether full queries are included
         const queryCatalog = this.buildQueryCatalog();
         const { notes, noteTypes } = includeNotes ? await this.buildAgentNotes(contextUser) : { notes: [], noteTypes: [] };
+        const canon = includeCanon ? await this.buildCanon(contextUser, forceEntityRefresh) : undefined;
         // Note: requests would be built here if includeRequests is true
 
         // Setup callback auth for Skip→client callbacks if needed
@@ -675,12 +869,146 @@ export class SkipSDK {
             queryCatalog,
             notes,
             noteTypes,
+            canon,
             userEmail: contextUser.Email,
             apiKeys: this.buildAPIKeys(),
             callingServerURL,
             callingServerAPIKey,
             databasePlatform: getDbType(),
         };
+    }
+
+    /**
+     * Builds the MJ Canon metadata payload (`concepts`, `edges`, and `renderedDocument`) from
+     * `CanonGraphEngine` when available on `@memberjunction/core-entities`.
+     * Returns `undefined` when `CanonGraphEngine` is not installed or the Canon is empty.
+     */
+    private async buildCanon(contextUser: UserInfo, forceRefresh: boolean = false): Promise<SkipCanonMetadata | undefined> {
+        SkipSDK.ensureMetadataEventSubscription();
+        if (SkipSDK.__canonMetadataCache && !forceRefresh) {
+            return SkipSDK.__canonMetadataCache;
+        }
+
+        try {
+            const canonEngineClass = (coreEntitiesModule as Record<string, unknown>)['CanonGraphEngine'] as
+                | {
+                      Instance?: {
+                          Config: (forceRefresh?: boolean, contextUser?: UserInfo) => Promise<void>;
+                          Concepts?: Array<{
+                              ID: string;
+                              Name: string;
+                              DisplayName?: string | null;
+                              ConceptType: string;
+                              ScopeID?: string | null;
+                              PrecedenceRank?: number | null;
+                              ConfidenceScore?: number | null;
+                              Definition?: string | null;
+                              AntiDefinition?: string | null;
+                              GroundingEntityID?: string | null;
+                              Status?: string | null;
+                          }>;
+                          Scopes?: Array<{ ID: string; Name: string }>;
+                          GetAliasesForConcept?: (conceptID: string) => Array<{ Alias: string }>;
+                          ApprovedCanonEdges?: Array<{
+                              ID: string;
+                              EdgeType?: string | null;
+                              SourceEntity: string;
+                              SourceRecordID: string;
+                              TargetEntity: string;
+                              TargetRecordID: string;
+                              Direction?: string | null;
+                              Weight?: number | null;
+                              ConfidenceScore?: number | null;
+                              Status?: string | null;
+                              Rationale?: string | null;
+                              Predicate?: string | null;
+                              Origin?: string | null;
+                          }>;
+                          RenderCanonDocument?: (
+                              options: { IncludeDeprecated?: boolean },
+                              contextUser?: UserInfo,
+                          ) => Promise<{ Markdown: string }>;
+                      };
+                  }
+                | undefined;
+
+            const engine = canonEngineClass?.Instance;
+            if (!engine || typeof engine.Config !== 'function') {
+                return undefined;
+            }
+
+            await engine.Config(forceRefresh, contextUser);
+
+            const rawConcepts = engine.Concepts ?? [];
+            const rawEdges = engine.ApprovedCanonEdges ?? [];
+            if (rawConcepts.length === 0 && rawEdges.length === 0) {
+                return undefined;
+            }
+
+            const provider = this.Provider;
+            const entitiesById = new Map<string, string>(
+                (provider?.Entities ?? []).map((e) => [e.ID.toLowerCase(), e.Name]),
+            );
+
+            const concepts: SkipCanonConceptSummary[] = rawConcepts.map((c) => {
+                const synonyms = typeof engine.GetAliasesForConcept === 'function'
+                    ? engine.GetAliasesForConcept(c.ID).map((a) => a.Alias)
+                    : [];
+                return {
+                    id: c.ID,
+                    name: c.Name,
+                    displayName: c.DisplayName ?? null,
+                    conceptType: c.ConceptType,
+                    status: c.Status ?? 'Active',
+                    definition: c.Definition ?? '',
+                    antiDefinition: c.AntiDefinition ?? null,
+                    synonyms: synonyms.length > 0 ? synonyms : undefined,
+                    ownerEntityName: c.GroundingEntityID
+                        ? (entitiesById.get(c.GroundingEntityID.toLowerCase()) ?? null)
+                        : null,
+                    precedenceRank: c.PrecedenceRank ?? 0,
+                    confidenceScore: c.ConfidenceScore ?? null,
+                };
+            });
+
+            const edges: SkipCanonEdgeSummary[] = rawEdges.map((e) => ({
+                id: e.ID,
+                edgeType: e.EdgeType ?? 'RELATED_TO',
+                sourceEntityName: e.SourceEntity,
+                sourceRecordID: e.SourceRecordID,
+                targetEntityName: e.TargetEntity,
+                targetRecordID: e.TargetRecordID,
+                direction: e.Direction ?? 'Directed',
+                weight: e.Weight ?? 1,
+                confidenceScore: e.ConfidenceScore ?? null,
+                status: e.Status ?? 'Approved',
+                rationale: e.Rationale ?? null,
+                predicate: e.Predicate ?? null,
+                origin: e.Origin ?? 'Manual',
+            }));
+
+            let domainDocument: string | undefined;
+            if (typeof engine.RenderCanonDocument === 'function') {
+                try {
+                    const docResult = await engine.RenderCanonDocument({ IncludeDeprecated: true }, contextUser);
+                    if (docResult?.Markdown) {
+                        domainDocument = docResult.Markdown;
+                    }
+                } catch {
+                    // Best-effort document rendering
+                }
+            }
+
+            const builtCanon: SkipCanonMetadata = {
+                concepts,
+                edges,
+                domainDocument,
+            };
+            SkipSDK.__canonMetadataCache = builtCanon;
+            return builtCanon;
+        } catch {
+            return undefined;
+        }
     }
 
     /**
@@ -749,6 +1077,7 @@ export class SkipSDK {
         const result = this.refreshSkipEntities(provider);
         SkipSDK.__lastRefreshTime = Date.now();
         SkipSDK.__entityCache = result.cacheable ? result.entities : null;
+        SkipSDK.__canonicalEntitiesCache = null;
         return result.entities;
     }
 
@@ -787,7 +1116,20 @@ export class SkipSDK {
             return;
         }
         const entityName = (entityEvent.baseEntity?.EntityInfo?.Name ?? entityEvent.entityName)?.trim().toLowerCase();
-        if (!entityName || !SkipSDK.SCOPE_METADATA_ENTITIES.has(entityName)) {
+        if (!entityName) {
+            return;
+        }
+        if (SkipSDK.QUERY_METADATA_ENTITIES.has(entityName)) {
+            SkipSDK.__canonicalQueriesCache = null;
+            SkipSDK.__canonicalQueryCatalogCache = null;
+            return;
+        }
+        if (SkipSDK.CANON_METADATA_ENTITIES.has(entityName)) {
+            SkipSDK.__canonMetadataCache = null;
+            SkipSDK.__canonicalCanonCache = null;
+            return;
+        }
+        if (!SkipSDK.SCOPE_METADATA_ENTITIES.has(entityName)) {
             return;
         }
         // Always the latest write: if MJ already refreshed after an earlier write, the next
@@ -807,6 +1149,7 @@ export class SkipSDK {
         }
         SkipSDK.__pendingScopeChange = null;
         SkipSDK.__entityCache = null;
+        SkipSDK.__canonicalEntitiesCache = null;
         LogStatus('[SkipSDK] MJ metadata refreshed after a scope change — rebuilding Skip entities');
     }
 
@@ -817,7 +1160,24 @@ export class SkipSDK {
      */
     public static InvalidateEntitiesCache(): void {
         SkipSDK.__entityCache = null;
+        SkipSDK.__canonicalEntitiesCache = null;
         LogStatus('[SkipSDK] Skip entities cache invalidated — the next request will rebuild it');
+    }
+
+    /**
+     * Discards cached canonicalized query and queryCatalog sections.
+     */
+    public static InvalidateQueriesCache(): void {
+        SkipSDK.__canonicalQueriesCache = null;
+        SkipSDK.__canonicalQueryCatalogCache = null;
+    }
+
+    /**
+     * Discards cached MJ Canon metadata and canonicalized section.
+     */
+    public static InvalidateCanonCache(): void {
+        SkipSDK.__canonMetadataCache = null;
+        SkipSDK.__canonicalCanonCache = null;
     }
 
     /**
