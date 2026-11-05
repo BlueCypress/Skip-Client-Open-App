@@ -19,6 +19,9 @@ import type { ProfileColumn } from './columnTypes.js';
 import type { ProfileSQLPlan } from './buildProfileSQL.js';
 import { FormatDate } from '../shared/dialectSQL.js';
 
+/** What shaping reads of a plan: the SQL pass's and the in-memory pass's plans both carry it. */
+type ProfilePlanColumns = Pick<ProfileSQLPlan, 'totalRowsAlias' | 'aggregates' | 'skipped'>;
+
 /** Per-column statistics keyed by column name. */
 type FieldMap = Record<string, ProfileFieldSummary>;
 
@@ -31,7 +34,7 @@ type FieldMap = Record<string, ProfileFieldSummary>;
  */
 export function shapeProfile(
     aggregateRow: Record<string, unknown>,
-    plan: ProfileSQLPlan,
+    plan: ProfilePlanColumns,
     columns: ProfileColumn[],
     skippedColumns: ProfileSkippedColumn[],
 ): QueryProfile {
@@ -71,7 +74,7 @@ const DATE_BOUNDS = new Set<string>(['minDate', 'maxDate']);
 
 function groupAggregatesByColumn(
     row: Record<string, unknown>,
-    plan: ProfileSQLPlan,
+    plan: ProfilePlanColumns,
 ): Map<string, RawColumnStats> {
     const byColumn = new Map<string, RawColumnStats>();
 
