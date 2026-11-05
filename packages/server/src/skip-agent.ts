@@ -176,7 +176,8 @@ export class SkipProxyAgent extends BaseAgent {
 
         const requestPhase = await this.resolveRequestPhase(
             params.lastRunId ?? this.AgentRun?.LastRunID,
-            params.contextUser
+            params.contextUser,
+            conversationId
         );
 
         // Prepare Skip SDK call options
@@ -258,17 +259,43 @@ export class SkipProxyAgent extends BaseAgent {
      */
     private async resolveRequestPhase(
         lastRunId: string | null | undefined,
-        contextUser: UserInfo
+        contextUser: UserInfo,
+        conversationId?: string
     ): Promise<SkipRequestPhase> {
-        if (!isValidUUID(lastRunId)) {
+        if (isValidUUID(lastRunId)) {
+            try {
+                const rv = new RunView();
+                const result = await rv.RunView<{ FinalStep: string | null }>({
+                    EntityName: 'MJ: AI Agent Runs',
+                    ExtraFilter: `ID='${lastRunId}'`,
+                    Fields: ['ID', 'FinalStep'],
+                    ResultType: 'simple'
+                }, contextUser);
+
+                const lastRun = result.Success ? result.Results?.[0] : undefined;
+                return lastRun?.FinalStep === 'Chat' ? 'clarify_question_response' : 'initial_request';
+            } catch (error) {
+                LogError(`[SkipProxyAgent] Could not resolve prior run ${lastRunId} for request phase: ${error}`);
+                return 'initial_request';
+            }
+        }
+
+        // Sub-agent fallback: MJ's ExecuteSubAgent does not populate lastRunId on child runs.
+        // When invoked as a sub-agent inside a conversation, check the most recent completed
+        // Skip / Skip: Component Builder run in that conversation.
+        if (!isValidUUID(conversationId)) {
             return 'initial_request';
         }
 
         try {
+            const currentRunId = this.AgentRun?.ID;
+            const excludeCurrentFilter = isValidUUID(currentRunId) ? ` AND ID<>'${currentRunId}'` : '';
             const rv = new RunView();
             const result = await rv.RunView<{ FinalStep: string | null }>({
                 EntityName: 'MJ: AI Agent Runs',
-                ExtraFilter: `ID='${lastRunId}'`,
+                ExtraFilter: `ConversationID='${conversationId}' AND Status='Completed' AND Agent IN ('Skip: Component Builder', 'Skip')${excludeCurrentFilter}`,
+                OrderBy: 'CompletedAt DESC, __mj_CreatedAt DESC',
+                MaxRows: 1,
                 Fields: ['ID', 'FinalStep'],
                 ResultType: 'simple'
             }, contextUser);
@@ -276,7 +303,7 @@ export class SkipProxyAgent extends BaseAgent {
             const lastRun = result.Success ? result.Results?.[0] : undefined;
             return lastRun?.FinalStep === 'Chat' ? 'clarify_question_response' : 'initial_request';
         } catch (error) {
-            LogError(`[SkipProxyAgent] Could not resolve prior run ${lastRunId} for request phase: ${error}`);
+            LogError(`[SkipProxyAgent] Could not resolve prior conversation run in ${conversationId} for request phase: ${error}`);
             return 'initial_request';
         }
     }

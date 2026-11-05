@@ -40,8 +40,65 @@ import type { ResolvedSkipRegistryURI } from './skip-config.js';
  * MJ core ships `deleteRecord` tombstones for these IDs, but on instances where the Open
  * App is installed the DELETE is a no-op (FK references from agent run history block it).
  */
-const SKIP_AGENT_ID = 'A829FAAC-9E64-440C-B650-83F92A37E990';
+export const SKIP_AGENT_ID = 'A829FAAC-9E64-440C-B650-83F92A37E990';
+export const SKIP_COMPONENT_BUILDER_AGENT_ID = 'B930FBBD-AF75-451D-A761-94FA3B48FA01';
+export const SKIP_DATA_ANSWERER_AGENT_ID = 'C1410CCE-B086-462E-B872-A50B4C590B12';
+export const SKIP_ANALYST_AGENT_ID = 'D2521DDF-C197-473F-C983-B61C5D6A1C23';
+export const SKIP_SCHEMA_GUIDE_AGENT_ID = 'E3632EE0-D2A8-4840-DA94-C72D6E7B2D34';
+export const SKIP_VISUALIZER_AGENT_ID = 'F4743FF1-E3B9-4951-EB05-D83E7F8C3E45';
 const SKIP_REGISTRY_ID = 'B2F8C247-D22E-4991-9A69-0F73954A68D6';
+
+export interface SkipSubAgentSpec {
+    id: string;
+    name: string;
+    description: string;
+    driverClass: string | null;
+    defaultArtifactType: 'Component' | 'Data' | 'Markdown' | 'SVG';
+    executionOrder: number;
+}
+
+export const SKIP_SUB_AGENTS: readonly SkipSubAgentSpec[] = [
+    {
+        id: SKIP_COMPONENT_BUILDER_AGENT_ID,
+        name: 'Skip: Component Builder',
+        description: 'Builds and refines interactive components, dashboards, reports, and multi-panel applications via Skip Brain.',
+        driverClass: 'SkipProxyAgent',
+        defaultArtifactType: 'Component',
+        executionOrder: 1,
+    },
+    {
+        id: SKIP_DATA_ANSWERER_AGENT_ID,
+        name: 'Skip: Data Answerer',
+        description: 'Answers factual data questions with governed SQL queries and tabular data artifacts.',
+        driverClass: null,
+        defaultArtifactType: 'Data',
+        executionOrder: 2,
+    },
+    {
+        id: SKIP_ANALYST_AGENT_ID,
+        name: 'Skip: Analyst',
+        description: 'Performs multi-step analytical investigations and root-cause analysis over governed entity data.',
+        driverClass: null,
+        defaultArtifactType: 'Markdown',
+        executionOrder: 3,
+    },
+    {
+        id: SKIP_SCHEMA_GUIDE_AGENT_ID,
+        name: 'Skip: Schema Guide',
+        description: 'Explains entity schemas, relationships, canonical views, and governed queries.',
+        driverClass: null,
+        defaultArtifactType: 'Markdown',
+        executionOrder: 4,
+    },
+    {
+        id: SKIP_VISUALIZER_AGENT_ID,
+        name: 'Skip: Visualizer',
+        description: 'Generates quick single-chart SVG visualizations for immediate data exploration.',
+        driverClass: null,
+        defaultArtifactType: 'SVG',
+        executionOrder: 5,
+    },
+] as const;
 
 /**
  * Namespace for deriving IDs of non-production registry records (`Skip-Stage`,
@@ -367,7 +424,19 @@ async function healProductionRegistryIfUnused(
  * brain does not strand its registry record.
  */
 export async function removeSkipRecords(contextUser: UserInfo, log: (m: string) => void): Promise<void> {
-    await deleteMatching('MJ: AI Agents', `(Name='Skip' AND DriverClass='SkipProxyAgent') OR ID='${SKIP_AGENT_ID}'`, contextUser, log);
+    const subAgentIds = SKIP_SUB_AGENTS.map((s) => `'${s.id}'`).join(', ');
+    await deleteMatching(
+        'MJ: AI Agents',
+        `ParentID='${SKIP_AGENT_ID}' OR ID IN (${subAgentIds})`,
+        contextUser,
+        log,
+    );
+    await deleteMatching(
+        'MJ: AI Agents',
+        `(Name='Skip' AND DriverClass IN ('SkipProxyAgent', 'SkipLocalAgent')) OR ID='${SKIP_AGENT_ID}'`,
+        contextUser,
+        log,
+    );
     await deleteMatching(
         'MJ: Component Registries',
         `ID='${SKIP_REGISTRY_ID}' OR ((Name='Skip' OR Name LIKE 'Skip-%') AND (URI LIKE '%askskip%' OR URI LIKE '%/registry'))`,
@@ -388,27 +457,53 @@ async function lookupId(entityName: string, name: string, contextUser: UserInfo)
 async function ensureSkipAgent(provider: IMetadataProvider, contextUser: UserInfo, log: (m: string) => void): Promise<void> {
     const rv = new RunView();
     const existing = await rv.RunView<MJAIAgentEntity>(
-        { EntityName: 'MJ: AI Agents', ExtraFilter: `Name='Skip' AND DriverClass='SkipProxyAgent'`, MaxRows: 1, ResultType: 'entity_object' },
+        {
+            EntityName: 'MJ: AI Agents',
+            ExtraFilter: `ID='${SKIP_AGENT_ID}' OR (Name='Skip' AND DriverClass IN ('SkipProxyAgent', 'SkipLocalAgent'))`,
+            MaxRows: 1,
+            ResultType: 'entity_object',
+        },
         contextUser,
     );
+
+    const typeID = await lookupId('MJ: AI Agent Types', 'Loop', contextUser);
+    const categoryID = await lookupId('MJ: AI Agent Categories', 'Assistant', contextUser);
+    const componentArtifactTypeID = await lookupId('MJ: Artifact Types', 'Component', contextUser);
+
     if (existing.Success && existing.Results?.length) {
         const agent = existing.Results[0];
+        let changed = false;
+
         if (agent.Status !== 'Active') {
             agent.Status = 'Active';
+            changed = true;
+        }
+        if (agent.DriverClass !== 'SkipLocalAgent') {
+            agent.DriverClass = 'SkipLocalAgent';
+            changed = true;
+        }
+        if (typeID && agent.TypeID !== typeID) {
+            agent.TypeID = typeID;
+            changed = true;
+        }
+        if (componentArtifactTypeID && !agent.DefaultArtifactTypeID) {
+            agent.DefaultArtifactTypeID = componentArtifactTypeID;
+            changed = true;
+        }
+
+        if (changed) {
             if (await agent.Save()) {
-                log('✓ Reactivated the "Skip" AI Agent (was deactivated by MJ core sync).');
+                log('✓ Reconciled the "Skip" AI Agent (Status=Active, DriverClass=SkipLocalAgent).');
             } else {
-                LogError(`[skip-client] Failed to reactivate the Skip AI Agent: ${agent.LatestResult?.Message ?? 'unknown error'}`);
+                LogError(`[skip-client] Failed to reconcile the Skip AI Agent: ${agent.LatestResult?.Message ?? 'unknown error'}`);
             }
         } else {
             log('Skip AI Agent already present and active — skipping.');
         }
+
+        await ensureSkipSubAgents(provider, contextUser, log, typeID, categoryID, componentArtifactTypeID);
         return;
     }
-
-    const typeID = await lookupId('MJ: AI Agent Types', 'Loop', contextUser);
-    const categoryID = await lookupId('MJ: AI Agent Categories', 'Assistant', contextUser);
-    const artifactTypeID = await lookupId('MJ: Artifact Types', 'Component', contextUser);
 
     const agent = await provider.GetEntityObject<MJAIAgentEntity>('MJ: AI Agents', contextUser);
     agent.NewRecord();
@@ -418,18 +513,125 @@ async function ensureSkipAgent(provider: IMetadataProvider, contextUser: UserInf
     agent.Name = 'Skip';
     agent.Description = 'Data analytics and reporting expert that can create charts, graphs, dashboards and provide insights on data';
     agent.Status = 'Active';
-    agent.DriverClass = 'SkipProxyAgent';
+    agent.DriverClass = 'SkipLocalAgent';
     agent.ExecutionOrder = 0;
     agent.ExposeAsAction = true;
     agent.IconClass = 'mj-icon-skip';
     if (typeID) agent.TypeID = typeID;
     if (categoryID) agent.CategoryID = categoryID;
-    if (artifactTypeID) agent.DefaultArtifactTypeID = artifactTypeID;
+    if (componentArtifactTypeID) agent.DefaultArtifactTypeID = componentArtifactTypeID;
 
     if (await agent.Save()) {
-        log('✓ Created the "Skip" AI Agent (DriverClass=SkipProxyAgent) — @skip is now available on this instance.');
+        log('✓ Created the "Skip" AI Agent (DriverClass=SkipLocalAgent) — @skip is now available on this instance.');
     } else {
         LogError(`[skip-client] Failed to create the Skip AI Agent: ${agent.LatestResult?.Message ?? 'unknown error'}`);
+        return;
+    }
+
+    await ensureSkipSubAgents(provider, contextUser, log, typeID, categoryID, componentArtifactTypeID);
+}
+
+async function ensureSkipSubAgents(
+    provider: IMetadataProvider,
+    contextUser: UserInfo,
+    log: (m: string) => void,
+    typeID: string | undefined,
+    categoryID: string | undefined,
+    componentArtifactTypeID: string | undefined,
+): Promise<void> {
+    const rv = new RunView();
+    const artifactTypeCache = new Map<string, string | undefined>();
+    if (componentArtifactTypeID) {
+        artifactTypeCache.set('Component', componentArtifactTypeID);
+    }
+
+    const resolveArtifactTypeID = async (artifactTypeName: string): Promise<string | undefined> => {
+        if (artifactTypeCache.has(artifactTypeName)) {
+            return artifactTypeCache.get(artifactTypeName);
+        }
+        const id = await lookupId('MJ: Artifact Types', artifactTypeName, contextUser);
+        artifactTypeCache.set(artifactTypeName, id);
+        return id;
+    };
+
+    for (const spec of SKIP_SUB_AGENTS) {
+        const escapedName = spec.name.replace(/'/g, "''");
+        const existing = await rv.RunView<MJAIAgentEntity>(
+            {
+                EntityName: 'MJ: AI Agents',
+                ExtraFilter: `ID='${spec.id}' OR (Name='${escapedName}' AND ParentID='${SKIP_AGENT_ID}')`,
+                MaxRows: 1,
+                ResultType: 'entity_object',
+            },
+            contextUser,
+        );
+
+        const defaultArtifactTypeID = await resolveArtifactTypeID(spec.defaultArtifactType);
+
+        if (existing.Success && existing.Results?.length) {
+            const subAgent = existing.Results[0];
+            let changed = false;
+
+            if (subAgent.Status !== 'Active') {
+                subAgent.Status = 'Active';
+                changed = true;
+            }
+            if (subAgent.ParentID?.toUpperCase() !== SKIP_AGENT_ID.toUpperCase()) {
+                subAgent.ParentID = SKIP_AGENT_ID;
+                changed = true;
+            }
+            if (subAgent.ExposeAsAction !== false) {
+                subAgent.ExposeAsAction = false;
+                changed = true;
+            }
+            if (subAgent.InvocationMode !== 'Sub-Agent') {
+                subAgent.InvocationMode = 'Sub-Agent';
+                changed = true;
+            }
+            if ((subAgent.DriverClass ?? null) !== spec.driverClass) {
+                subAgent.DriverClass = spec.driverClass;
+                changed = true;
+            }
+            if (typeID && subAgent.TypeID !== typeID) {
+                subAgent.TypeID = typeID;
+                changed = true;
+            }
+            if (defaultArtifactTypeID && subAgent.DefaultArtifactTypeID !== defaultArtifactTypeID) {
+                subAgent.DefaultArtifactTypeID = defaultArtifactTypeID;
+                changed = true;
+            }
+
+            if (changed) {
+                if (await subAgent.Save()) {
+                    log(`✓ Reconciled sub-agent "${spec.name}".`);
+                } else {
+                    LogError(`[skip-client] Failed to reconcile sub-agent "${spec.name}": ${subAgent.LatestResult?.Message ?? 'unknown error'}`);
+                }
+            }
+            continue;
+        }
+
+        const subAgent = await provider.GetEntityObject<MJAIAgentEntity>('MJ: AI Agents', contextUser);
+        subAgent.NewRecord();
+        subAgent.ID = spec.id;
+        subAgent.Name = spec.name;
+        subAgent.Description = spec.description;
+        subAgent.ParentID = SKIP_AGENT_ID;
+        subAgent.Status = 'Active';
+        subAgent.DriverClass = spec.driverClass;
+        subAgent.ExecutionOrder = spec.executionOrder;
+        subAgent.ExposeAsAction = false;
+        subAgent.InvocationMode = 'Sub-Agent';
+        subAgent.IconClass = 'mj-icon-skip';
+        if (typeID) subAgent.TypeID = typeID;
+        if (categoryID) subAgent.CategoryID = categoryID;
+        if (defaultArtifactTypeID) subAgent.DefaultArtifactTypeID = defaultArtifactTypeID;
+
+        if (await subAgent.Save()) {
+            log(`✓ Created sub-agent "${spec.name}".`);
+        } else {
+            LogError(`[skip-client] Failed to create sub-agent "${spec.name}": ${subAgent.LatestResult?.Message ?? 'unknown error'}`);
+        }
     }
 }
 

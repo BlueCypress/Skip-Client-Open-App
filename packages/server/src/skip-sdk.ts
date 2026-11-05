@@ -964,8 +964,15 @@ export class SkipSDK {
                 versions: SkipAPIArtifactVersion[]
             }>();
 
-            // Process each row (represents one version)
+            // Process each row (represents one version).
+            // Only include Component output artifacts here — local sub-agents running under Skip
+            // (Data Answerer, Visualizer, Analyst, Schema Guide) produce Data, SVG, and Markdown
+            // output artifacts on Skip's conversation details, and Skip Brain's ComponentArtifacts()
+            // treats every non-"Data Snapshot" artifact as a Component spec.
             for (const row of result.Results) {
+                if (row.ArtifactTypeName && row.ArtifactTypeName.trim().toLowerCase() !== 'component') {
+                    continue;
+                }
                 const artifactId = row.ArtifactID;
 
                 // Initialize artifact entry if not exists

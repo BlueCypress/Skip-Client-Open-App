@@ -16,24 +16,27 @@
  */
 import { LogStatus } from '@memberjunction/core';
 import { SkipProxyAgent } from './skip-agent.js';
+import { SkipLocalAgent } from './skip-local-agent.js';
 import { SkipMiddleware } from './skip-middleware.js';
 
 export * from '@askskip/core';
 export * from './skip-sdk.js';
 export * from './skip-agent.js';
+export * from './skip-local-agent.js';
 export * from './skip-callback-key-provisioner.js';
 export * from './skip-middleware.js';
 
 /**
  * Open App server bootstrap entry point — referenced by the manifest as
  * `packages.server[].startupExport`. Importing this package already runs the
- * `@RegisterClass` decorators for SkipProxyAgent and SkipMiddleware; this function
- * makes that explicit (and tree-shake-proof) and logs activation. The actual scoped
- * callback key is minted lazily on the first Skip request by the provisioner.
+ * `@RegisterClass` decorators for SkipProxyAgent, SkipLocalAgent, and SkipMiddleware;
+ * this function makes that explicit (and tree-shake-proof) and logs activation. The
+ * actual scoped callback key is minted lazily on the first Skip request by the provisioner.
  */
 export function registerSkip(): void {
     // Reference the decorated classes so bundlers cannot drop the registration side effects.
     void SkipProxyAgent;
+    void SkipLocalAgent;
     void SkipMiddleware;
-    LogStatus('[skip-client] Skip Client Open App server package registered (SkipProxyAgent + middleware).');
+    LogStatus('[skip-client] Skip Client Open App server package registered (SkipLocalAgent + SkipProxyAgent + middleware).');
 }
