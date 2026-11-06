@@ -530,6 +530,18 @@ async function ensureSkipAgent(provider: IMetadataProvider, contextUser: UserInf
             agent.ChatHandlingOption = null;
             changed = true;
         }
+        if (agent.InjectNotes !== true) {
+            agent.InjectNotes = true;
+            changed = true;
+        }
+        if (agent.MaxNotesToInject !== 10) {
+            agent.MaxNotesToInject = 10;
+            changed = true;
+        }
+        if (agent.NoteInjectionStrategy !== 'Recent') {
+            agent.NoteInjectionStrategy = 'Recent';
+            changed = true;
+        }
 
         if (changed) {
             if (await agent.Save()) {
@@ -559,6 +571,9 @@ async function ensureSkipAgent(provider: IMetadataProvider, contextUser: UserInf
     agent.ExposeAsAction = true;
     agent.ModelSelectionMode = 'Agent';
     agent.ChatHandlingOption = null;
+    agent.InjectNotes = true;
+    agent.MaxNotesToInject = 10;
+    agent.NoteInjectionStrategy = 'Recent';
     agent.IconClass = 'mj-icon-skip';
     if (typeID) agent.TypeID = typeID;
     if (categoryID) agent.CategoryID = categoryID;
@@ -656,6 +671,18 @@ async function ensureSkipSubAgents(
                 subAgent.DefaultArtifactTypeID = defaultArtifactTypeID;
                 changed = true;
             }
+            if (subAgent.InjectNotes !== true) {
+                subAgent.InjectNotes = true;
+                changed = true;
+            }
+            if (subAgent.MaxNotesToInject !== 10) {
+                subAgent.MaxNotesToInject = 10;
+                changed = true;
+            }
+            if (subAgent.NoteInjectionStrategy !== 'Recent') {
+                subAgent.NoteInjectionStrategy = 'Recent';
+                changed = true;
+            }
 
             if (changed) {
                 if (await subAgent.Save()) {
@@ -681,6 +708,9 @@ async function ensureSkipSubAgents(
         subAgent.MessageMode = 'All';
         subAgent.ModelSelectionMode = 'Agent';
         subAgent.ChatHandlingOption = null;
+        subAgent.InjectNotes = true;
+        subAgent.MaxNotesToInject = 10;
+        subAgent.NoteInjectionStrategy = 'Recent';
         subAgent.IconClass = 'mj-icon-skip';
         if (typeID) subAgent.TypeID = typeID;
         if (categoryID) subAgent.CategoryID = categoryID;
