@@ -121,6 +121,7 @@ describe('SkipSDK client identity', () => {
         expect(request.clientCapabilities).toEqual([
             SkipClientCapability.ArtifactDirective,
             SkipClientCapability.MetadataCache,
+            SkipClientCapability.SkipLocal,
         ]);
     });
 
