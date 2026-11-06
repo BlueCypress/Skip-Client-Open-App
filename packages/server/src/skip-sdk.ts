@@ -26,12 +26,28 @@ import {
     SkipRetryAction,
     SkipErrorDetail,
     SkipClientCapability,
+    SkipRoutingHint,
+    SkipPromotionContext,
+    SkipMetadataSection,
+    SkipMetadataRef,
+    SkipCanonMetadata,
+    SkipCanonConceptSummary,
+    SkipCanonEdgeSummary,
+    SkipCanonAlternateBaseViewSummary,
 } from '@askskip/types';
 import { createRequire } from 'node:module';
 import { isValidUUID, requireValidUUID } from './uuid-guard.js';
 import { noteBrainContact } from './registry-reconciler.js';
+import {
+    CanonicalizedMetadataSection,
+    canonicalizeMetadataSection,
+    brainSupportsMetadataCache,
+    recordBrainCapabilities,
+} from './metadata-canonicalizer.js';
+import { enrichCanonWithAgentNotes } from './notetaker-canon-bridge.js';
 import { DataContext } from '@memberjunction/data-context';
 import { IMetadataProvider, UserInfo, LogStatus, LogError, Metadata, RunQuery, RunView, EntityInfo, BaseEntity, BaseEntityEvent, AllMetadata } from '@memberjunction/core';
+import * as coreEntitiesModule from '@memberjunction/core-entities';
 import { MJConversationDetailEntity, QueryEngine } from '@memberjunction/core-entities';
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
@@ -64,7 +80,11 @@ type MJEventStream = ReturnType<MJGlobal['GetEventListener']>;
 const SKIP_SDK_VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
 /** Features this SDK acts on, sent to Skip as `clientCapabilities`. */
-const CLIENT_CAPABILITIES: string[] = [SkipClientCapability.ArtifactDirective];
+const CLIENT_CAPABILITIES: string[] = [
+    SkipClientCapability.ArtifactDirective,
+    SkipClientCapability.MetadataCache,
+    SkipClientCapability.SkipLocal,
+];
 
 /**
  * Configuration options for Skip SDK
@@ -175,11 +195,44 @@ export interface SkipCallOptions {
     externalReferenceID?: string;
 
     /**
+     * Optional routing hint forwarded from `SkipLocalAgent`.
+     */
+    routingHint?: SkipRoutingHint;
+
+    /**
+     * Optional context carried when a local answer is promoted to a reusable component.
+     */
+    promotionContext?: SkipPromotionContext;
+
+    /**
+     * Include MJ Canon metadata (concepts, governed edges, rendered domain document) in request
+     */
+    includeCanon?: boolean;
+
+    /**
      * Internal flag to prevent infinite retry loops during callback key re-provisioning.
      * Set automatically by the SDK — callers should not set this.
      * @internal
      */
     _isCallbackKeyRetry?: boolean;
+
+    /**
+     * Internal flag to prevent infinite retry loops during metadata cache miss resends.
+     * @internal
+     */
+    _isMetadataCacheRetry?: boolean;
+
+    /**
+     * Sections reported missing by Brain on a metadata_cache_miss response.
+     * @internal
+     */
+    _missingMetadataSections?: SkipMetadataSection[];
+
+    /**
+     * Forces full legacy metadata arrays in the request (used as double-miss fallback).
+     * @internal
+     */
+    _forceLegacyMetadataPayload?: boolean;
 }
 
 /**
@@ -304,6 +357,15 @@ export class SkipSDK {
      */
     private static __entityCache: EntityInfo[] | null = null;
 
+    /** Canonicalized JSON + SHA-256 ref for each metadata section. */
+    private static __canonicalEntitiesCache: CanonicalizedMetadataSection | null = null;
+    private static __canonicalQueriesCache: CanonicalizedMetadataSection | null = null;
+    private static __canonicalQueryCatalogCache: CanonicalizedMetadataSection | null = null;
+    private static __canonicalNotesCache: CanonicalizedMetadataSection | null = null;
+    private static __canonicalNoteTypesCache: CanonicalizedMetadataSection | null = null;
+    private static __canonMetadataCache: SkipCanonMetadata | null = null;
+    private static __canonicalCanonCache: CanonicalizedMetadataSection | null = null;
+
     /**
      * When the payload was last built. Read only to report the gap between builds in the build
      * log, which is how an unexpected rebuild gets spotted in a host's log.
@@ -317,6 +379,42 @@ export class SkipSDK {
      * CodeGen, which means a schema change and an MJAPI restart, and the restart clears this cache.
      */
     private static readonly SCOPE_METADATA_ENTITIES: ReadonlySet<string> = new Set(['mj: entities', 'mj: entity fields']);
+
+    /**
+     * Query metadata entities (lowercased) whose runtime writes invalidate the canonicalized
+     * queries and queryCatalog caches.
+     */
+    private static readonly QUERY_METADATA_ENTITIES: ReadonlySet<string> = new Set([
+        'mj: queries',
+        'mj: query fields',
+        'mj: query parameters',
+        'mj: query entities',
+        'mj: query categories',
+    ]);
+
+    /**
+     * Canon metadata entities (lowercased) whose runtime writes invalidate the canonicalized
+     * canon cache.
+     */
+    private static readonly CANON_METADATA_ENTITIES: ReadonlySet<string> = new Set([
+        'mj: graph concepts',
+        'mj: graph edges',
+        'mj: graph edge types',
+        'mj: graphs',
+        'mj: entity alternate base views',
+        'mj: concepts',
+        'mj: concept aliases',
+        'mj: alternate base views',
+    ]);
+
+    /**
+     * Agent note metadata entities (lowercased) whose runtime writes invalidate both the
+     * notes/noteTypes caches and the Notetaker-enriched canon cache.
+     */
+    private static readonly NOTE_METADATA_ENTITIES: ReadonlySet<string> = new Set([
+        'mj: ai agent notes',
+        'mj: ai agent note types',
+    ]);
 
     /**
      * The MJGlobal event stream currently subscribed to. Compared by identity, not a boolean,
@@ -447,11 +545,13 @@ export class SkipSDK {
             }
 
             // A parsed final response means Skip read the request body, so any newly
-            // provisioned callback key in it was stored — Skip resolves the callback
-            // credential before running any workflow, so a Skip-side error still
-            // implies receipt. Confirming here is what makes the key safe to keep
-            // across a restart; anything short of this leaves it discardable.
-            confirmCallbackKeyDelivered();
+            // provisioned callback key in it was stored — EXCEPT when Skip returns
+            // metadata_cache_miss before reaching callback credential resolution.
+            // Confirming on metadata_cache_miss would prevent the resend from carrying
+            // the newly minted callback key.
+            if (finalResponse.errorDetail?.code !== SkipErrorCode.metadata_cache_miss) {
+                confirmCallbackKeyDelivered();
+            }
 
             // A parsed final response is also proof the brain is up right now — the only
             // moment the client can learn which component registry it publishes under.
@@ -459,6 +559,12 @@ export class SkipSDK {
             // hours apart locally, and a brain can be down for maintenance), so catch up
             // here. Fire-and-forget: never delays or fails this request.
             noteBrainContact(options.contextUser);
+
+            // Record any serverCapabilities advertised on the response so subsequent
+            // turns immediately use metadataRefs if Brain supports metadataCache.
+            if (this.config.apiUrl && Array.isArray(finalResponse.serverCapabilities)) {
+                recordBrainCapabilities(this.config.apiUrl, finalResponse.serverCapabilities);
+            }
 
             // Check if Skip itself reported an error (success: false in the response body)
             if (finalResponse.success === false) {
@@ -484,6 +590,29 @@ export class SkipSDK {
                     LogStatus('[SkipSDK] Callback key invalid — revoking old key and re-provisioning');
                     await resetCallbackKeyProvisioning();
                     return this.chat({ ...options, _isCallbackKeyRetry: true });
+                }
+
+                // Handle metadata cache miss: resend only the missing sections on the first
+                // miss, or fall back to a full inline legacy metadata payload if a second miss
+                // occurs so a cache miss can never fail a user's turn.
+                if (detail?.code === SkipErrorCode.metadata_cache_miss
+                    && detail.retryAction === SkipRetryAction.resend_with_metadata) {
+                    if (!options._isMetadataCacheRetry) {
+                        const missing = detail.missingSections ?? [];
+                        LogStatus(`[SkipSDK] Metadata cache miss for sections [${missing.join(', ')}] — resending missing sections`);
+                        return this.chat({
+                            ...options,
+                            _isMetadataCacheRetry: true,
+                            _missingMetadataSections: missing,
+                        });
+                    }
+                    if (!options._forceLegacyMetadataPayload) {
+                        LogStatus('[SkipSDK] Second metadata cache miss — falling back to full inline metadata payload');
+                        return this.chat({
+                            ...options,
+                            _forceLegacyMetadataPayload: true,
+                        });
+                    }
                 }
 
                 return {
@@ -578,10 +707,15 @@ export class SkipSDK {
             includeQueries = true,
             includeNotes = true,
             includeRequests = false,
+            includeCanon = true,
             forceEntityRefresh = false,
             includeCallbackAuth = true,
             payload,
-            externalReferenceID
+            externalReferenceID,
+            routingHint,
+            promotionContext,
+            _missingMetadataSections,
+            _forceLegacyMetadataPayload = false,
         } = options;
 
         // Build base request with metadata
@@ -594,7 +728,8 @@ export class SkipSDK {
             includeRequests,
             forceEntityRefresh,
             includeCallbackAuth,
-            { conversationId, requestPhase }
+            { conversationId, requestPhase },
+            includeCanon
         );
 
         // Build artifacts for this conversation
@@ -602,6 +737,39 @@ export class SkipSDK {
 
         // Process messages: filter delegation messages and enrich with metadata
         const processedMessages = this.processMessages(messages);
+
+        const useMetadataCache =
+            !_forceLegacyMetadataPayload &&
+            brainSupportsMetadataCache(this.config.apiUrl || '');
+
+        let metadataRefs: Partial<Record<SkipMetadataSection, SkipMetadataRef>> | undefined;
+        let metadataContent: Partial<Record<SkipMetadataSection, string>> | undefined;
+
+        if (useMetadataCache) {
+            const sections = this.getCanonicalizedSections(
+                baseRequest,
+                includeEntities,
+                includeQueries,
+                includeNotes,
+                includeCanon,
+                forceEntityRefresh,
+            );
+
+            metadataRefs = {};
+            for (const [sec, entry] of Object.entries(sections) as [SkipMetadataSection, CanonicalizedMetadataSection][]) {
+                metadataRefs[sec] = entry.ref;
+            }
+
+            if (_missingMetadataSections && _missingMetadataSections.length > 0) {
+                metadataContent = {};
+                for (const missingSection of _missingMetadataSections) {
+                    const entry = sections[missingSection];
+                    if (entry) {
+                        metadataContent[missingSection] = entry.canonicalJson;
+                    }
+                }
+            }
+        }
 
         // Construct the full Skip API request
         const request: SkipAPIRequest = {
@@ -611,11 +779,14 @@ export class SkipSDK {
             requestPhase,
             artifacts,
             payload, // Pass through payload for incremental artifact building (e.g., PRD in progress)
-            entities: baseRequest.entities || [],
-            queries: baseRequest.queries || [],
-            queryCatalog: baseRequest.queryCatalog,
-            notes: baseRequest.notes,
-            noteTypes: baseRequest.noteTypes,
+            entities: useMetadataCache ? [] : (baseRequest.entities || []),
+            queries: useMetadataCache ? [] : (baseRequest.queries || []),
+            queryCatalog: useMetadataCache ? undefined : baseRequest.queryCatalog,
+            notes: useMetadataCache ? undefined : baseRequest.notes,
+            noteTypes: useMetadataCache ? undefined : baseRequest.noteTypes,
+            canon: useMetadataCache ? undefined : baseRequest.canon,
+            metadataRefs,
+            metadataContent,
             userEmail: baseRequest.userEmail,
             apiKeys: baseRequest.apiKeys,
             callingServerURL: baseRequest.callingServerURL,
@@ -623,10 +794,73 @@ export class SkipSDK {
             externalReferenceID,
             databasePlatform: baseRequest.databasePlatform,
             clientCapabilities: [...CLIENT_CAPABILITIES],
-            skipSDKVersion: SKIP_SDK_VERSION
+            skipSDKVersion: SKIP_SDK_VERSION,
+            ...(routingHint ? { routingHint } : {}),
+            ...(promotionContext ? { promotionContext } : {})
         };
 
         return request;
+    }
+
+    /**
+     * Computes or reuses cached canonicalized JSON + SHA-256 refs for each active metadata section.
+     */
+    private getCanonicalizedSections(
+        baseRequest: Partial<SkipAPIRequest>,
+        includeEntities: boolean,
+        includeQueries: boolean,
+        includeNotes: boolean,
+        includeCanon: boolean,
+        forceEntityRefresh: boolean,
+    ): Partial<Record<SkipMetadataSection, CanonicalizedMetadataSection>> {
+        const result: Partial<Record<SkipMetadataSection, CanonicalizedMetadataSection>> = {};
+
+        if (includeEntities) {
+            if (!SkipSDK.__canonicalEntitiesCache || forceEntityRefresh) {
+                const entities = baseRequest.entities || [];
+                const canonical = canonicalizeMetadataSection('entities', entities);
+                if (SkipSDK.__entityCache !== null) {
+                    SkipSDK.__canonicalEntitiesCache = canonical;
+                }
+                result.entities = canonical;
+            } else {
+                result.entities = SkipSDK.__canonicalEntitiesCache;
+            }
+        }
+
+        if (includeQueries) {
+            if (!SkipSDK.__canonicalQueriesCache) {
+                SkipSDK.__canonicalQueriesCache = canonicalizeMetadataSection('queries', baseRequest.queries || []);
+            }
+            result.queries = SkipSDK.__canonicalQueriesCache;
+        }
+
+        if (baseRequest.queryCatalog) {
+            if (!SkipSDK.__canonicalQueryCatalogCache) {
+                SkipSDK.__canonicalQueryCatalogCache = canonicalizeMetadataSection('queryCatalog', baseRequest.queryCatalog);
+            }
+            result.queryCatalog = SkipSDK.__canonicalQueryCatalogCache;
+        }
+
+        if (includeNotes) {
+            if (!SkipSDK.__canonicalNotesCache) {
+                SkipSDK.__canonicalNotesCache = canonicalizeMetadataSection('notes', baseRequest.notes || []);
+            }
+            if (!SkipSDK.__canonicalNoteTypesCache) {
+                SkipSDK.__canonicalNoteTypesCache = canonicalizeMetadataSection('noteTypes', baseRequest.noteTypes || []);
+            }
+            result.notes = SkipSDK.__canonicalNotesCache;
+            result.noteTypes = SkipSDK.__canonicalNoteTypesCache;
+        }
+
+        if (includeCanon && baseRequest.canon) {
+            if (!SkipSDK.__canonicalCanonCache) {
+                SkipSDK.__canonicalCanonCache = canonicalizeMetadataSection('canon', baseRequest.canon);
+            }
+            result.canon = SkipSDK.__canonicalCanonCache;
+        }
+
+        return result;
     }
 
     /**
@@ -641,7 +875,8 @@ export class SkipSDK {
         includeRequests: boolean,
         forceEntityRefresh: boolean,
         includeCallbackAuth: boolean,
-        additionalTokenInfo: any = {}
+        additionalTokenInfo: any = {},
+        includeCanon: boolean = true
     ): Promise<Partial<SkipAPIRequest>> {
         const entities = includeEntities ? this.buildEntities(forceEntityRefresh) : [];
         const queries = includeQueries ? this.buildQueries() : [];
@@ -649,6 +884,10 @@ export class SkipSDK {
         // regardless of whether full queries are included
         const queryCatalog = this.buildQueryCatalog();
         const { notes, noteTypes } = includeNotes ? await this.buildAgentNotes(contextUser) : { notes: [], noteTypes: [] };
+        const rawCanon = includeCanon ? await this.buildCanon(contextUser, forceEntityRefresh) : undefined;
+        const canon = includeCanon
+            ? enrichCanonWithAgentNotes(rawCanon, notes, { entities, queries })
+            : undefined;
         // Note: requests would be built here if includeRequests is true
 
         // Setup callback auth for Skip→client callbacks if needed
@@ -675,12 +914,208 @@ export class SkipSDK {
             queryCatalog,
             notes,
             noteTypes,
+            canon,
             userEmail: contextUser.Email,
             apiKeys: this.buildAPIKeys(),
             callingServerURL,
             callingServerAPIKey,
             databasePlatform: getDbType(),
         };
+    }
+
+    /**
+     * Builds the MJ Canon metadata payload (`concepts`, `edges`, `alternateBaseViews`, and `domainDocument`)
+     * from `GraphEngine` + `CanonGraphEngine` (when available on `@memberjunction/core-entities`)
+     * or via `RunView` on the `"MJ Canon"` entities (`MJ: Graph Concepts`, `MJ: Graph Edges`,
+     * `MJ: Entity Alternate Base Views`).
+     * Returns `undefined` when Canon is not installed or is empty.
+     */
+    private async buildCanon(contextUser: UserInfo, forceRefresh: boolean = false): Promise<SkipCanonMetadata | undefined> {
+        SkipSDK.ensureMetadataEventSubscription();
+        if (SkipSDK.__canonMetadataCache && !forceRefresh) {
+            return SkipSDK.__canonMetadataCache;
+        }
+
+        try {
+            const mod = coreEntitiesModule as Record<string, unknown>;
+            const graphEngineClass = ('GraphEngine' in mod ? mod['GraphEngine'] : undefined) as
+                | {
+                      Instance?: {
+                          Config?: (forceRefresh?: boolean, contextUser?: UserInfo) => Promise<void>;
+                          Concepts?: Array<Record<string, unknown>>;
+                          StoredEdges?: Array<Record<string, unknown>>;
+                      };
+                  }
+                | undefined;
+            const canonEngineClass = ('CanonGraphEngine' in mod ? mod['CanonGraphEngine'] : undefined) as
+                | {
+                      Instance?: {
+                          Config?: (forceRefresh?: boolean, contextUser?: UserInfo) => Promise<void>;
+                          Concepts?: Array<Record<string, unknown>>;
+                          ApprovedCanonEdges?: Array<Record<string, unknown>>;
+                          GetAliasesForConcept?: (conceptID: string) => Array<{ Alias: string }>;
+                          RenderCanonDocument?: (
+                              options: Record<string, unknown>,
+                              contextUser?: UserInfo,
+                          ) => Promise<string | { Markdown?: string }> | string | { Markdown?: string };
+                      };
+                  }
+                | undefined;
+
+            const graphEngine = graphEngineClass?.Instance;
+            const canonEngine = canonEngineClass?.Instance;
+
+            let rawConcepts: Array<Record<string, unknown>> = [];
+            let rawEdges: Array<Record<string, unknown>> = [];
+            let rawAbvs: Array<Record<string, unknown>> = [];
+            let domainDocument: string | undefined;
+
+            if (graphEngine && typeof graphEngine.Config === 'function') {
+                await graphEngine.Config(forceRefresh, contextUser);
+                rawConcepts = (graphEngine.Concepts ?? []).filter(
+                    (c) => c.Status === 'Approved' || c.Status === 'Active',
+                );
+                rawEdges = (graphEngine.StoredEdges ?? []).filter(
+                    (e) => !e.Status || e.Status === 'Approved',
+                );
+            } else if (canonEngine && typeof canonEngine.Config === 'function') {
+                await canonEngine.Config(forceRefresh, contextUser);
+                rawConcepts = canonEngine.Concepts ?? [];
+                rawEdges = canonEngine.ApprovedCanonEdges ?? [];
+            } else if (
+                this.Provider?.Entities?.some((e) => e.Name === 'MJ: Graph Concepts')
+            ) {
+                const rv = new RunView();
+                const [conceptsRes, edgesRes, abvsRes] = await rv.RunViews([
+                    {
+                        EntityName: 'MJ: Graph Concepts',
+                        ExtraFilter: "Status = 'Approved'",
+                        ResultType: 'simple',
+                    },
+                    {
+                        EntityName: 'MJ: Graph Edges',
+                        ExtraFilter: "Status = 'Approved'",
+                        ResultType: 'simple',
+                    },
+                    {
+                        EntityName: 'MJ: Entity Alternate Base Views',
+                        ExtraFilter: "Status = 'Active'",
+                        ResultType: 'simple',
+                    },
+                ], contextUser);
+                if (conceptsRes?.Success) rawConcepts = (conceptsRes.Results ?? []) as Array<Record<string, unknown>>;
+                if (edgesRes?.Success) rawEdges = (edgesRes.Results ?? []) as Array<Record<string, unknown>>;
+                if (abvsRes?.Success) rawAbvs = (abvsRes.Results ?? []) as Array<Record<string, unknown>>;
+            } else {
+                return undefined;
+            }
+
+            if (rawConcepts.length === 0 && rawEdges.length === 0 && rawAbvs.length === 0) {
+                return undefined;
+            }
+
+            const provider = this.Provider;
+            const entitiesById = new Map<string, string>(
+                (provider?.Entities ?? []).map((e) => [e.ID.toLowerCase(), e.Name]),
+            );
+
+            const concepts: SkipCanonConceptSummary[] = rawConcepts.map((c) => {
+                const id = String(c.ID ?? '');
+                let synonyms: string[] = [];
+                if (canonEngine && typeof canonEngine.GetAliasesForConcept === 'function') {
+                    synonyms = canonEngine.GetAliasesForConcept(id).map((a) => a.Alias);
+                } else if (typeof c.Synonyms === 'string' && c.Synonyms.trim().length > 0) {
+                    try {
+                        const parsed = JSON.parse(c.Synonyms);
+                        if (Array.isArray(parsed)) synonyms = parsed.map(String);
+                    } catch {
+                        synonyms = c.Synonyms.split(',').map((s) => s.trim()).filter(Boolean);
+                    }
+                }
+                const groundingId = typeof c.GroundingEntityID === 'string' ? c.GroundingEntityID : null;
+                const rawStatus = String(c.Status ?? 'Active');
+                return {
+                    id,
+                    name: String(c.Name ?? ''),
+                    displayName: (c.DisplayName as string | null | undefined) ?? null,
+                    conceptType: String(c.ConceptType ?? 'Term'),
+                    // Normalize 'Approved' (v6.2 GraphConcept) to 'Active' for Skip-Brain compatibility
+                    status: rawStatus === 'Approved' ? 'Active' : rawStatus,
+                    definition: String(c.Definition ?? c.Description ?? ''),
+                    antiDefinition: (c.AntiDefinition as string | null | undefined) ?? null,
+                    synonyms: synonyms.length > 0 ? synonyms : undefined,
+                    ownerEntityName: groundingId
+                        ? (entitiesById.get(groundingId.toLowerCase()) ?? null)
+                        : null,
+                    precedenceRank: typeof c.PrecedenceRank === 'number' ? c.PrecedenceRank : 0,
+                    confidenceScore: typeof c.ConfidenceScore === 'number' ? c.ConfidenceScore : null,
+                };
+            });
+
+            const edges: SkipCanonEdgeSummary[] = rawEdges.map((e) => ({
+                id: String(e.ID ?? ''),
+                edgeType: String(e.EdgeType ?? 'RELATED_TO'),
+                sourceEntityName: String(e.SourceEntity ?? ''),
+                sourceRecordID: String(e.SourceRecordID ?? ''),
+                targetEntityName: String(e.TargetEntity ?? ''),
+                targetRecordID: String(e.TargetRecordID ?? ''),
+                direction: String(e.Direction ?? 'Directed'),
+                weight: typeof e.Weight === 'number' ? e.Weight : Number(e.Weight ?? 1),
+                confidenceScore:
+                    typeof e.ConfidenceScore === 'number'
+                        ? e.ConfidenceScore
+                        : typeof e.Confidence === 'number'
+                          ? e.Confidence
+                          : null,
+                status: String(e.Status ?? 'Approved'),
+                rationale: (e.Rationale ?? e.Description ?? null) as string | null,
+                predicate: (e.Predicate ?? null) as string | null,
+                origin: String(e.Origin ?? 'Declared'),
+            }));
+
+            if (canonEngine && typeof canonEngine.RenderCanonDocument === 'function') {
+                try {
+                    const docResult = await canonEngine.RenderCanonDocument({ IncludeDeprecated: true }, contextUser);
+                    if (typeof docResult === 'string' && docResult.trim().length > 0) {
+                        domainDocument = docResult;
+                    } else if (docResult && typeof docResult === 'object' && typeof docResult.Markdown === 'string') {
+                        domainDocument = docResult.Markdown;
+                    }
+                } catch {
+                    // Best-effort document rendering
+                }
+            }
+
+            const alternateBaseViews: SkipCanonAlternateBaseViewSummary[] = rawAbvs.map((abv) => {
+                const entityID = String(abv.EntityID ?? '');
+                return {
+                    id: String(abv.ID ?? ''),
+                    entityID,
+                    entityName: abv.Entity
+                        ? String(abv.Entity)
+                        : entitiesById.get(entityID.toLowerCase()),
+                    name: String(abv.Name ?? ''),
+                    viewName: String(abv.ViewName ?? ''),
+                    viewSchema: String(abv.ViewSchema ?? 'dbo'),
+                    description: (abv.Description ?? null) as string | null,
+                    filterSummary: String(abv.FilterSummary ?? ''),
+                    priority: typeof abv.Priority === 'number' ? abv.Priority : Number(abv.Priority ?? 100),
+                    isDefaultForAI: Boolean(abv.IsDefaultForAI),
+                    status: String(abv.Status ?? 'Active'),
+                };
+            });
+
+            const builtCanon: SkipCanonMetadata = {
+                concepts,
+                edges,
+                ...(alternateBaseViews.length > 0 ? { alternateBaseViews } : {}),
+                domainDocument,
+            };
+            SkipSDK.__canonMetadataCache = builtCanon;
+            return builtCanon;
+        } catch {
+            return undefined;
+        }
     }
 
     /**
@@ -749,6 +1184,7 @@ export class SkipSDK {
         const result = this.refreshSkipEntities(provider);
         SkipSDK.__lastRefreshTime = Date.now();
         SkipSDK.__entityCache = result.cacheable ? result.entities : null;
+        SkipSDK.__canonicalEntitiesCache = null;
         return result.entities;
     }
 
@@ -787,7 +1223,27 @@ export class SkipSDK {
             return;
         }
         const entityName = (entityEvent.baseEntity?.EntityInfo?.Name ?? entityEvent.entityName)?.trim().toLowerCase();
-        if (!entityName || !SkipSDK.SCOPE_METADATA_ENTITIES.has(entityName)) {
+        if (!entityName) {
+            return;
+        }
+        if (SkipSDK.QUERY_METADATA_ENTITIES.has(entityName)) {
+            SkipSDK.__canonicalQueriesCache = null;
+            SkipSDK.__canonicalQueryCatalogCache = null;
+            return;
+        }
+        if (SkipSDK.CANON_METADATA_ENTITIES.has(entityName)) {
+            SkipSDK.__canonMetadataCache = null;
+            SkipSDK.__canonicalCanonCache = null;
+            return;
+        }
+        if (SkipSDK.NOTE_METADATA_ENTITIES.has(entityName)) {
+            SkipSDK.__canonicalNotesCache = null;
+            SkipSDK.__canonicalNoteTypesCache = null;
+            SkipSDK.__canonMetadataCache = null;
+            SkipSDK.__canonicalCanonCache = null;
+            return;
+        }
+        if (!SkipSDK.SCOPE_METADATA_ENTITIES.has(entityName)) {
             return;
         }
         // Always the latest write: if MJ already refreshed after an earlier write, the next
@@ -807,6 +1263,7 @@ export class SkipSDK {
         }
         SkipSDK.__pendingScopeChange = null;
         SkipSDK.__entityCache = null;
+        SkipSDK.__canonicalEntitiesCache = null;
         LogStatus('[SkipSDK] MJ metadata refreshed after a scope change — rebuilding Skip entities');
     }
 
@@ -817,7 +1274,34 @@ export class SkipSDK {
      */
     public static InvalidateEntitiesCache(): void {
         SkipSDK.__entityCache = null;
+        SkipSDK.__canonicalEntitiesCache = null;
         LogStatus('[SkipSDK] Skip entities cache invalidated — the next request will rebuild it');
+    }
+
+    /**
+     * Discards cached canonicalized query and queryCatalog sections.
+     */
+    public static InvalidateQueriesCache(): void {
+        SkipSDK.__canonicalQueriesCache = null;
+        SkipSDK.__canonicalQueryCatalogCache = null;
+    }
+
+    /**
+     * Discards cached MJ Canon metadata and canonicalized section.
+     */
+    public static InvalidateCanonCache(): void {
+        SkipSDK.__canonMetadataCache = null;
+        SkipSDK.__canonicalCanonCache = null;
+    }
+
+    /**
+     * Discards cached AI Agent Notes, Note Types, and Notetaker-enriched Canon sections.
+     */
+    public static InvalidateNotesCache(): void {
+        SkipSDK.__canonicalNotesCache = null;
+        SkipSDK.__canonicalNoteTypesCache = null;
+        SkipSDK.__canonMetadataCache = null;
+        SkipSDK.__canonicalCanonCache = null;
     }
 
     /**
@@ -913,13 +1397,96 @@ export class SkipSDK {
     }
 
     /**
-     * Build agent notes for Skip
+     * Builds active `SkipAPIAgentNote` and `SkipAPIAgentNoteType` metadata from `AIEngine.Instance`
+     * (or via `RunView` when `MJ: AI Agent Notes` is registered on the metadata provider).
+     * Filters to Global notes (`AgentID == null && UserID == null`), Skip-scoped notes, or notes
+     * belonging to the requesting `contextUser`.
      */
     private async buildAgentNotes(contextUser: UserInfo): Promise<{ notes: SkipAPIAgentNote[], noteTypes: SkipAPIAgentNoteType[] }> {
-        // TODO: Implement agent notes building
-        // This would query AIAgentNote entities and convert to SkipAPIAgentNote format
-        // For now, returning empty arrays
-        return { notes: [], noteTypes: [] };
+        SkipSDK.ensureMetadataEventSubscription();
+        try {
+            await AIEngine.Instance.Config(false, contextUser);
+            const engine = AIEngine.Instance as unknown as {
+                AgentNotes?: Array<Record<string, unknown>>;
+                AgentNoteTypes?: Array<Record<string, unknown>>;
+                GetAgentByName?: (name: string) => { ID?: string } | null;
+            };
+
+            let rawNotes = Array.isArray(engine.AgentNotes) ? engine.AgentNotes : [];
+            let rawNoteTypes = Array.isArray(engine.AgentNoteTypes) ? engine.AgentNoteTypes : [];
+
+            if (
+                rawNotes.length === 0 &&
+                this.Provider?.Entities?.some((e) => e.Name === 'MJ: AI Agent Notes')
+            ) {
+                const rv = new RunView();
+                const [notesRes, typesRes] = await rv.RunViews([
+                    {
+                        EntityName: 'MJ: AI Agent Notes',
+                        ExtraFilter: "Status = 'Active'",
+                        ResultType: 'simple',
+                    },
+                    {
+                        EntityName: 'MJ: AI Agent Note Types',
+                        ExtraFilter: '',
+                        ResultType: 'simple',
+                    },
+                ], contextUser);
+                if (notesRes?.Success) rawNotes = (notesRes.Results ?? []) as Array<Record<string, unknown>>;
+                if (typesRes?.Success) rawNoteTypes = (typesRes.Results ?? []) as Array<Record<string, unknown>>;
+            }
+
+            const skipAgentId = engine.GetAgentByName?.('Skip')?.ID;
+            const userId = contextUser?.ID;
+
+            const filteredNotes = rawNotes.filter((n) => {
+                const status = String(n.Status ?? 'Active');
+                if (status !== 'Active') return false;
+
+                const noteAgentId = typeof n.AgentID === 'string' ? n.AgentID : null;
+                const noteAgentName = typeof n.Agent === 'string' ? n.Agent : '';
+                const noteUserId = typeof n.UserID === 'string' ? n.UserID : null;
+
+                const agentMatches =
+                    !noteAgentId ||
+                    (skipAgentId ? UUIDsEqual(noteAgentId, skipAgentId) : false) ||
+                    noteAgentName === 'Skip' ||
+                    noteAgentName.startsWith('Skip:');
+
+                const userMatches =
+                    !noteUserId ||
+                    (userId ? UUIDsEqual(noteUserId, userId) : false);
+
+                return agentMatches && userMatches;
+            });
+
+            const noteTypes: SkipAPIAgentNoteType[] = rawNoteTypes.map((nt) => ({
+                id: String(nt.ID ?? ''),
+                name: String(nt.Name ?? ''),
+                description: String(nt.Description ?? ''),
+            }));
+
+            const notes: SkipAPIAgentNote[] = filteredNotes.map((n) => {
+                const noteUserId = typeof n.UserID === 'string' && n.UserID.length > 0 ? n.UserID : null;
+                const createdRaw = n.__mj_CreatedAt ?? n.CreatedAt;
+                const updatedRaw = n.__mj_UpdatedAt ?? n.UpdatedAt ?? createdRaw;
+                return {
+                    id: String(n.ID ?? ''),
+                    agentNoteTypeId: String(n.AgentNoteTypeID ?? ''),
+                    agentNoteType: String(n.AgentNoteType ?? n.Type ?? 'Context'),
+                    createdAt: createdRaw instanceof Date ? createdRaw : new Date(String(createdRaw ?? 0)),
+                    updatedAt: updatedRaw instanceof Date ? updatedRaw : new Date(String(updatedRaw ?? 0)),
+                    note: String(n.Note ?? ''),
+                    type: noteUserId ? 'User' : 'Global',
+                    userId: noteUserId,
+                    user: typeof n.User === 'string' ? n.User : null,
+                };
+            });
+
+            return { notes, noteTypes };
+        } catch {
+            return { notes: [], noteTypes: [] };
+        }
     }
 
     /**
@@ -964,8 +1531,15 @@ export class SkipSDK {
                 versions: SkipAPIArtifactVersion[]
             }>();
 
-            // Process each row (represents one version)
+            // Process each row (represents one version).
+            // Only include Component output artifacts here — local sub-agents running under Skip
+            // (Data Answerer, Visualizer, Analyst, Schema Guide) produce Data, SVG, and Markdown
+            // output artifacts on Skip's conversation details, and Skip Brain's ComponentArtifacts()
+            // treats every non-"Data Snapshot" artifact as a Component spec.
             for (const row of result.Results) {
+                if (row.ArtifactTypeName && row.ArtifactTypeName.trim().toLowerCase() !== 'component') {
+                    continue;
+                }
                 const artifactId = row.ArtifactID;
 
                 // Initialize artifact entry if not exists

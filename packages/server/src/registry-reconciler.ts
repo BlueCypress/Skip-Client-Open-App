@@ -24,6 +24,7 @@ import { LogError, LogStatus, Metadata } from '@memberjunction/core';
 import type { UserInfo } from '@memberjunction/core';
 import { UserCache } from '@memberjunction/sqlserver-dataprovider';
 import { ensureSkipRecords, fetchSkipRegistryName, getSkipConfig, resolveSkipApiKey } from '@askskip/core';
+import { recordBrainCapabilities } from './metadata-canonicalizer.js';
 
 /**
  * Minimum gap between name checks once reconciliation has succeeded.
@@ -98,7 +99,15 @@ async function reconcile(contextUser?: UserInfo): Promise<void> {
 
     const config = getSkipConfig();
     const apiKey = config.apiKey ?? (await resolveSkipApiKey(contextUser ?? systemUser));
-    const reported = await fetchSkipRegistryName({ skipURL: config.skipURL, apiKey });
+    const reported = await fetchSkipRegistryName({
+        skipURL: config.skipURL,
+        apiKey,
+        onRegistryInfo: (info) => {
+            if (config.skipURL && info.serverCapabilities.length > 0) {
+                recordBrainCapabilities(config.skipURL, info.serverCapabilities);
+            }
+        },
+    });
     if (!reported) {
         // Still unknown. Leave reconciledName as-is so the next successful call retries;
         // guessing here is what points a production registry at someone's laptop.

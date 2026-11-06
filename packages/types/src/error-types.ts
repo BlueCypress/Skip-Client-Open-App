@@ -12,6 +12,8 @@
  * Both use the `const + typeof` pattern matching SkipRequestPhase/SkipResponsePhase.
  */
 
+import type { SkipMetadataSection } from './api-types.js';
+
 /**
  * Broad error classification. Maps 1:1 to the server's internal ErrorCategory.
  * Clients can switch on this for coarse handling; unknown values should be
@@ -70,6 +72,8 @@ export const SkipErrorCode = {
     missing_required_field: 'missing_required_field',
     /** A request field has an invalid format or value */
     invalid_request_format: 'invalid_request_format',
+    /** One or more content-hashed metadata sections are not in the Brain's cache */
+    metadata_cache_miss: 'metadata_cache_miss',
 
     // ── ai_model ────────────────────────────────────────────────────────
     /** AI provider rate limit exceeded */
@@ -118,6 +122,8 @@ export const SkipRetryAction = {
     retry: 'retry',
     /** Re-provision credentials and retry the request */
     reprovision_and_retry: 'reprovision_and_retry',
+    /** Resend the request including canonical metadataContent for missingSections */
+    resend_with_metadata: 'resend_with_metadata',
     /** Modify the request (simplify, rephrase) and retry */
     modify_and_retry: 'modify_and_retry',
     /** Do not retry — requires user or admin intervention */
@@ -176,4 +182,10 @@ export interface SkipErrorDetail {
      * Never contains sensitive information (credentials, internal IPs).
      */
     details?: string;
+
+    /**
+     * When `code` is `metadata_cache_miss`, lists the sections the client must
+     * supply in `metadataContent` on its retry.
+     */
+    missingSections?: SkipMetadataSection[];
 }

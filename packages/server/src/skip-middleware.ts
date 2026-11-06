@@ -35,9 +35,11 @@ import {
 import { SkipSDK } from './skip-sdk.js';
 import { APP_OWNED_SCOPE_PATHS, REQUIRED_SCOPE_PATHS } from './skip-callback-key-provisioner.js';
 import { markRegistryReconciled } from './registry-reconciler.js';
+import { recordBrainCapabilities } from './metadata-canonicalizer.js';
 
-// Side-effect import: ensure SkipProxyAgent's @RegisterClass(BaseAgent, 'SkipProxyAgent') runs.
+// Side-effect imports: ensure SkipProxyAgent's and SkipLocalAgent's @RegisterClass decorators run.
 import './skip-agent.js';
+import './skip-local-agent.js';
 
 const SKIP_SERVICE_EMAIL = 'skip-service@skip.internal';
 
@@ -362,7 +364,15 @@ export class SkipMiddleware extends BaseServerMiddleware {
             }
         }
 
-        const reported = await fetchSkipRegistryName({ skipURL: config.skipURL, apiKey });
+        const reported = await fetchSkipRegistryName({
+            skipURL: config.skipURL,
+            apiKey,
+            onRegistryInfo: (info) => {
+                if (config.skipURL && info.serverCapabilities.length > 0) {
+                    recordBrainCapabilities(config.skipURL, info.serverCapabilities);
+                }
+            },
+        });
         if (!reported) {
             LogStatus(
                 `[skip-client] Brain at ${config.skipURL} did not report a registry name (unreachable, or a ` +
