@@ -261,10 +261,18 @@ export function normalizeMetadataSectionValue(
                 .map((e) => convertToPlainRecord(e))
                 .sort((a, b) => normalizeId(a.id ?? a.ID).localeCompare(normalizeId(b.id ?? b.ID)));
 
+            const rawAbvs = Array.isArray(record.alternateBaseViews) ? record.alternateBaseViews : [];
+            const sortedAbvs = rawAbvs
+                .map((abv) => convertToPlainRecord(abv))
+                .sort((a, b) => compareSequenceThenId(a.priority, b.priority, a.id ?? a.ID, b.id ?? b.ID));
+
             const canonObj: Record<string, unknown> = {
                 concepts: sortedConcepts,
                 edges: sortedEdges,
             };
+            if (sortedAbvs.length > 0) {
+                canonObj.alternateBaseViews = sortedAbvs;
+            }
             if (typeof record.domainDocument === 'string' && record.domainDocument.length > 0) {
                 canonObj.domainDocument = record.domainDocument;
             } else if (typeof record.renderedDocument === 'string' && record.renderedDocument.length > 0) {
@@ -273,7 +281,7 @@ export function normalizeMetadataSectionValue(
 
             return {
                 normalized: sortObjectKeysRecursively(canonObj),
-                itemCount: sortedConcepts.length + sortedEdges.length,
+                itemCount: sortedConcepts.length + sortedEdges.length + sortedAbvs.length,
             };
         }
     }

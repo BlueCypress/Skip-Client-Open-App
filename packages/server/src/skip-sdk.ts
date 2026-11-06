@@ -31,6 +31,7 @@ import {
     SkipCanonMetadata,
     SkipCanonConceptSummary,
     SkipCanonEdgeSummary,
+    SkipCanonAlternateBaseViewSummary,
 } from '@askskip/types';
 import { createRequire } from 'node:module';
 import { isValidUUID, requireValidUUID } from './uuid-guard.js';
@@ -380,10 +381,14 @@ export class SkipSDK {
      * canon cache.
      */
     private static readonly CANON_METADATA_ENTITIES: ReadonlySet<string> = new Set([
-        'mj: concepts',
-        'mj: concept aliases',
+        'mj: graph concepts',
         'mj: graph edges',
         'mj: graph edge types',
+        'mj: graphs',
+        'mj: entity alternate base views',
+        'mj: concepts',
+        'mj: concept aliases',
+        'mj: alternate base views',
     ]);
 
     /**
@@ -879,9 +884,11 @@ export class SkipSDK {
     }
 
     /**
-     * Builds the MJ Canon metadata payload (`concepts`, `edges`, and `renderedDocument`) from
-     * `CanonGraphEngine` when available on `@memberjunction/core-entities`.
-     * Returns `undefined` when `CanonGraphEngine` is not installed or the Canon is empty.
+     * Builds the MJ Canon metadata payload (`concepts`, `edges`, `alternateBaseViews`, and `domainDocument`)
+     * from `GraphEngine` + `CanonGraphEngine` (when available on `@memberjunction/core-entities`)
+     * or via `RunView` on the `"MJ Canon"` entities (`MJ: Graph Concepts`, `MJ: Graph Edges`,
+     * `MJ: Entity Alternate Base Views`).
+     * Returns `undefined` when Canon is not installed or is empty.
      */
     private async buildCanon(contextUser: UserInfo, forceRefresh: boolean = false): Promise<SkipCanonMetadata | undefined> {
         SkipSDK.ensureMetadataEventSubscription();
@@ -890,58 +897,80 @@ export class SkipSDK {
         }
 
         try {
-            const canonEngineClass = (coreEntitiesModule as Record<string, unknown>)['CanonGraphEngine'] as
+            const mod = coreEntitiesModule as Record<string, unknown>;
+            const graphEngineClass = ('GraphEngine' in mod ? mod['GraphEngine'] : undefined) as
                 | {
                       Instance?: {
-                          Config: (forceRefresh?: boolean, contextUser?: UserInfo) => Promise<void>;
-                          Concepts?: Array<{
-                              ID: string;
-                              Name: string;
-                              DisplayName?: string | null;
-                              ConceptType: string;
-                              ScopeID?: string | null;
-                              PrecedenceRank?: number | null;
-                              ConfidenceScore?: number | null;
-                              Definition?: string | null;
-                              AntiDefinition?: string | null;
-                              GroundingEntityID?: string | null;
-                              Status?: string | null;
-                          }>;
-                          Scopes?: Array<{ ID: string; Name: string }>;
+                          Config?: (forceRefresh?: boolean, contextUser?: UserInfo) => Promise<void>;
+                          Concepts?: Array<Record<string, unknown>>;
+                          StoredEdges?: Array<Record<string, unknown>>;
+                      };
+                  }
+                | undefined;
+            const canonEngineClass = ('CanonGraphEngine' in mod ? mod['CanonGraphEngine'] : undefined) as
+                | {
+                      Instance?: {
+                          Config?: (forceRefresh?: boolean, contextUser?: UserInfo) => Promise<void>;
+                          Concepts?: Array<Record<string, unknown>>;
+                          ApprovedCanonEdges?: Array<Record<string, unknown>>;
                           GetAliasesForConcept?: (conceptID: string) => Array<{ Alias: string }>;
-                          ApprovedCanonEdges?: Array<{
-                              ID: string;
-                              EdgeType?: string | null;
-                              SourceEntity: string;
-                              SourceRecordID: string;
-                              TargetEntity: string;
-                              TargetRecordID: string;
-                              Direction?: string | null;
-                              Weight?: number | null;
-                              ConfidenceScore?: number | null;
-                              Status?: string | null;
-                              Rationale?: string | null;
-                              Predicate?: string | null;
-                              Origin?: string | null;
-                          }>;
                           RenderCanonDocument?: (
-                              options: { IncludeDeprecated?: boolean },
+                              options: Record<string, unknown>,
                               contextUser?: UserInfo,
-                          ) => Promise<{ Markdown: string }>;
+                          ) => Promise<string | { Markdown?: string }> | string | { Markdown?: string };
                       };
                   }
                 | undefined;
 
-            const engine = canonEngineClass?.Instance;
-            if (!engine || typeof engine.Config !== 'function') {
+            const graphEngine = graphEngineClass?.Instance;
+            const canonEngine = canonEngineClass?.Instance;
+
+            let rawConcepts: Array<Record<string, unknown>> = [];
+            let rawEdges: Array<Record<string, unknown>> = [];
+            let rawAbvs: Array<Record<string, unknown>> = [];
+            let domainDocument: string | undefined;
+
+            if (graphEngine && typeof graphEngine.Config === 'function') {
+                await graphEngine.Config(forceRefresh, contextUser);
+                rawConcepts = (graphEngine.Concepts ?? []).filter(
+                    (c) => c.Status === 'Approved' || c.Status === 'Active',
+                );
+                rawEdges = (graphEngine.StoredEdges ?? []).filter(
+                    (e) => !e.Status || e.Status === 'Approved',
+                );
+            } else if (canonEngine && typeof canonEngine.Config === 'function') {
+                await canonEngine.Config(forceRefresh, contextUser);
+                rawConcepts = canonEngine.Concepts ?? [];
+                rawEdges = canonEngine.ApprovedCanonEdges ?? [];
+            } else if (
+                this.Provider?.Entities?.some((e) => e.Name === 'MJ: Graph Concepts')
+            ) {
+                const rv = new RunView();
+                const [conceptsRes, edgesRes, abvsRes] = await rv.RunViews([
+                    {
+                        EntityName: 'MJ: Graph Concepts',
+                        ExtraFilter: "Status = 'Approved'",
+                        ResultType: 'simple',
+                    },
+                    {
+                        EntityName: 'MJ: Graph Edges',
+                        ExtraFilter: "Status = 'Approved'",
+                        ResultType: 'simple',
+                    },
+                    {
+                        EntityName: 'MJ: Entity Alternate Base Views',
+                        ExtraFilter: "Status = 'Active'",
+                        ResultType: 'simple',
+                    },
+                ], contextUser);
+                if (conceptsRes?.Success) rawConcepts = (conceptsRes.Results ?? []) as Array<Record<string, unknown>>;
+                if (edgesRes?.Success) rawEdges = (edgesRes.Results ?? []) as Array<Record<string, unknown>>;
+                if (abvsRes?.Success) rawAbvs = (abvsRes.Results ?? []) as Array<Record<string, unknown>>;
+            } else {
                 return undefined;
             }
 
-            await engine.Config(forceRefresh, contextUser);
-
-            const rawConcepts = engine.Concepts ?? [];
-            const rawEdges = engine.ApprovedCanonEdges ?? [];
-            if (rawConcepts.length === 0 && rawEdges.length === 0) {
+            if (rawConcepts.length === 0 && rawEdges.length === 0 && rawAbvs.length === 0) {
                 return undefined;
             }
 
@@ -951,47 +980,65 @@ export class SkipSDK {
             );
 
             const concepts: SkipCanonConceptSummary[] = rawConcepts.map((c) => {
-                const synonyms = typeof engine.GetAliasesForConcept === 'function'
-                    ? engine.GetAliasesForConcept(c.ID).map((a) => a.Alias)
-                    : [];
+                const id = String(c.ID ?? '');
+                let synonyms: string[] = [];
+                if (canonEngine && typeof canonEngine.GetAliasesForConcept === 'function') {
+                    synonyms = canonEngine.GetAliasesForConcept(id).map((a) => a.Alias);
+                } else if (typeof c.Synonyms === 'string' && c.Synonyms.trim().length > 0) {
+                    try {
+                        const parsed = JSON.parse(c.Synonyms);
+                        if (Array.isArray(parsed)) synonyms = parsed.map(String);
+                    } catch {
+                        synonyms = c.Synonyms.split(',').map((s) => s.trim()).filter(Boolean);
+                    }
+                }
+                const groundingId = typeof c.GroundingEntityID === 'string' ? c.GroundingEntityID : null;
+                const rawStatus = String(c.Status ?? 'Active');
                 return {
-                    id: c.ID,
-                    name: c.Name,
-                    displayName: c.DisplayName ?? null,
-                    conceptType: c.ConceptType,
-                    status: c.Status ?? 'Active',
-                    definition: c.Definition ?? '',
-                    antiDefinition: c.AntiDefinition ?? null,
+                    id,
+                    name: String(c.Name ?? ''),
+                    displayName: (c.DisplayName as string | null | undefined) ?? null,
+                    conceptType: String(c.ConceptType ?? 'Term'),
+                    // Normalize 'Approved' (v6.2 GraphConcept) to 'Active' for Skip-Brain compatibility
+                    status: rawStatus === 'Approved' ? 'Active' : rawStatus,
+                    definition: String(c.Definition ?? c.Description ?? ''),
+                    antiDefinition: (c.AntiDefinition as string | null | undefined) ?? null,
                     synonyms: synonyms.length > 0 ? synonyms : undefined,
-                    ownerEntityName: c.GroundingEntityID
-                        ? (entitiesById.get(c.GroundingEntityID.toLowerCase()) ?? null)
+                    ownerEntityName: groundingId
+                        ? (entitiesById.get(groundingId.toLowerCase()) ?? null)
                         : null,
-                    precedenceRank: c.PrecedenceRank ?? 0,
-                    confidenceScore: c.ConfidenceScore ?? null,
+                    precedenceRank: typeof c.PrecedenceRank === 'number' ? c.PrecedenceRank : 0,
+                    confidenceScore: typeof c.ConfidenceScore === 'number' ? c.ConfidenceScore : null,
                 };
             });
 
             const edges: SkipCanonEdgeSummary[] = rawEdges.map((e) => ({
-                id: e.ID,
-                edgeType: e.EdgeType ?? 'RELATED_TO',
-                sourceEntityName: e.SourceEntity,
-                sourceRecordID: e.SourceRecordID,
-                targetEntityName: e.TargetEntity,
-                targetRecordID: e.TargetRecordID,
-                direction: e.Direction ?? 'Directed',
-                weight: e.Weight ?? 1,
-                confidenceScore: e.ConfidenceScore ?? null,
-                status: e.Status ?? 'Approved',
-                rationale: e.Rationale ?? null,
-                predicate: e.Predicate ?? null,
-                origin: e.Origin ?? 'Manual',
+                id: String(e.ID ?? ''),
+                edgeType: String(e.EdgeType ?? 'RELATED_TO'),
+                sourceEntityName: String(e.SourceEntity ?? ''),
+                sourceRecordID: String(e.SourceRecordID ?? ''),
+                targetEntityName: String(e.TargetEntity ?? ''),
+                targetRecordID: String(e.TargetRecordID ?? ''),
+                direction: String(e.Direction ?? 'Directed'),
+                weight: typeof e.Weight === 'number' ? e.Weight : Number(e.Weight ?? 1),
+                confidenceScore:
+                    typeof e.ConfidenceScore === 'number'
+                        ? e.ConfidenceScore
+                        : typeof e.Confidence === 'number'
+                          ? e.Confidence
+                          : null,
+                status: String(e.Status ?? 'Approved'),
+                rationale: (e.Rationale ?? e.Description ?? null) as string | null,
+                predicate: (e.Predicate ?? null) as string | null,
+                origin: String(e.Origin ?? 'Declared'),
             }));
 
-            let domainDocument: string | undefined;
-            if (typeof engine.RenderCanonDocument === 'function') {
+            if (canonEngine && typeof canonEngine.RenderCanonDocument === 'function') {
                 try {
-                    const docResult = await engine.RenderCanonDocument({ IncludeDeprecated: true }, contextUser);
-                    if (docResult?.Markdown) {
+                    const docResult = await canonEngine.RenderCanonDocument({ IncludeDeprecated: true }, contextUser);
+                    if (typeof docResult === 'string' && docResult.trim().length > 0) {
+                        domainDocument = docResult;
+                    } else if (docResult && typeof docResult === 'object' && typeof docResult.Markdown === 'string') {
                         domainDocument = docResult.Markdown;
                     }
                 } catch {
@@ -999,9 +1046,29 @@ export class SkipSDK {
                 }
             }
 
+            const alternateBaseViews: SkipCanonAlternateBaseViewSummary[] = rawAbvs.map((abv) => {
+                const entityID = String(abv.EntityID ?? '');
+                return {
+                    id: String(abv.ID ?? ''),
+                    entityID,
+                    entityName: abv.Entity
+                        ? String(abv.Entity)
+                        : entitiesById.get(entityID.toLowerCase()),
+                    name: String(abv.Name ?? ''),
+                    viewName: String(abv.ViewName ?? ''),
+                    viewSchema: String(abv.ViewSchema ?? 'dbo'),
+                    description: (abv.Description ?? null) as string | null,
+                    filterSummary: String(abv.FilterSummary ?? ''),
+                    priority: typeof abv.Priority === 'number' ? abv.Priority : Number(abv.Priority ?? 100),
+                    isDefaultForAI: Boolean(abv.IsDefaultForAI),
+                    status: String(abv.Status ?? 'Active'),
+                };
+            });
+
             const builtCanon: SkipCanonMetadata = {
                 concepts,
                 edges,
+                ...(alternateBaseViews.length > 0 ? { alternateBaseViews } : {}),
                 domainDocument,
             };
             SkipSDK.__canonMetadataCache = builtCanon;

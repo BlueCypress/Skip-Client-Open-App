@@ -341,10 +341,26 @@ export interface SkipCanonEdgeSummary {
     origin: string;
 }
 
+/** Summary of an alternate base view (ABV) in the client's `"MJ Canon"` graph. */
+export interface SkipCanonAlternateBaseViewSummary {
+    id: string;
+    entityID: string;
+    entityName?: string;
+    name: string;
+    viewName: string;
+    viewSchema: string;
+    description?: string | null;
+    filterSummary: string;
+    priority: number;
+    isDefaultForAI: boolean;
+    status: string;
+}
+
 /** Canonical domain knowledge payload carried in the `canon` metadata section. */
 export interface SkipCanonMetadata {
     concepts: SkipCanonConceptSummary[];
     edges: SkipCanonEdgeSummary[];
+    alternateBaseViews?: SkipCanonAlternateBaseViewSummary[];
     /** Deterministic collapsed Markdown domain document rendered by CanonGraphEngine. */
     domainDocument?: string;
 }
