@@ -520,11 +520,13 @@ export class SkipSDK {
             }
 
             // A parsed final response means Skip read the request body, so any newly
-            // provisioned callback key in it was stored — Skip resolves the callback
-            // credential before running any workflow, so a Skip-side error still
-            // implies receipt. Confirming here is what makes the key safe to keep
-            // across a restart; anything short of this leaves it discardable.
-            confirmCallbackKeyDelivered();
+            // provisioned callback key in it was stored — EXCEPT when Skip returns
+            // metadata_cache_miss before reaching callback credential resolution.
+            // Confirming on metadata_cache_miss would prevent the resend from carrying
+            // the newly minted callback key.
+            if (finalResponse.errorDetail?.code !== SkipErrorCode.metadata_cache_miss) {
+                confirmCallbackKeyDelivered();
+            }
 
             // A parsed final response is also proof the brain is up right now — the only
             // moment the client can learn which component registry it publishes under.
