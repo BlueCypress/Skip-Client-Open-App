@@ -30,7 +30,10 @@ import {
     SKIP_COMPONENT_BUILDER_AGENT_ID,
     BUILD_REUSABLE_COMPONENT_LABEL,
 } from '@askskip/core';
+import type { SkipPromotionContext, SkipRoutingHint } from '@askskip/types';
 import { SkipProxyAgent, SkipAgentContext } from './skip-agent.js';
+
+export type { SkipPromotionContext, SkipRoutingHint };
 
 export const SKIP_COMPONENT_BUILDER_NAME = 'Skip: Component Builder';
 export const SKIP_DATA_ANSWERER_NAME = 'Skip: Data Answerer';
@@ -51,18 +54,6 @@ export interface SkipCompactRouterEnvelope {
     confidence?: 'high' | 'medium' | 'low';
     reasoning?: string;
     reply?: string | null;
-}
-
-/**
- * Validated query and summary context carried when a local answer is promoted
- * to `Skip: Component Builder` via `"Build a reusable component for this"`.
- */
-export interface SkipPromotionContext {
-    queryName?: string;
-    sql?: string;
-    title?: string;
-    summary?: string;
-    sourceSubAgent?: string | null;
 }
 
 /**
@@ -258,6 +249,8 @@ export function extractPromotionContext(
             : null;
 
     const queryName = typeof payload?.queryName === 'string' ? payload.queryName.trim() : undefined;
+    const categoryPath =
+        typeof payload?.categoryPath === 'string' ? payload.categoryPath.trim() : undefined;
     const sql = typeof payload?.sql === 'string' ? payload.sql.trim() : undefined;
     const title = typeof payload?.title === 'string' ? payload.title.trim() : undefined;
     const interpretation =
@@ -269,6 +262,7 @@ export function extractPromotionContext(
 
     return {
         ...(queryName ? { queryName } : {}),
+        ...(categoryPath ? { categoryPath } : {}),
         ...(sql ? { sql } : {}),
         ...(title ? { title } : {}),
         ...(interpretation ? { summary: interpretation } : {}),
@@ -366,12 +360,15 @@ export class SkipLocalAgent extends BaseAgent {
         // Fast-path 2: Explicit escalation trigger ("Build a reusable component for this" or [component])
         if (isExplicitComponentEscalation(latestUserText)) {
             const promotionContext = extractPromotionContext(params, routerState);
-            if (promotionContext) {
-                params.data = {
-                    ...(params.data || {}),
-                    promotionContext,
-                };
-            }
+            const routingHint: SkipRoutingHint = {
+                intent: 'build',
+                confidence: 'high',
+            };
+            params.data = {
+                ...(params.data || {}),
+                routingHint,
+                ...(promotionContext ? { promotionContext } : {}),
+            };
             LogStatus(
                 `[SkipLocalAgent] Fast-path routing to "${SKIP_COMPONENT_BUILDER_NAME}" (explicit component escalation trigger).`,
             );
@@ -384,6 +381,15 @@ export class SkipLocalAgent extends BaseAgent {
 
         // Fast-path 3: User explicitly attached a Component artifact to refine on this turn
         if (routerState.attachedComponent) {
+            const routingHint: SkipRoutingHint = {
+                intent: 'modify',
+                confidence: 'high',
+                targetArtifactId: routerState.attachedComponent.id,
+            };
+            params.data = {
+                ...(params.data || {}),
+                routingHint,
+            };
             LogStatus(
                 `[SkipLocalAgent] Fast-path routing to "${SKIP_COMPONENT_BUILDER_NAME}" (attached component "${routerState.attachedComponent.name}" v${routerState.attachedComponent.version}).`,
             );
@@ -484,6 +490,10 @@ export class SkipLocalAgent extends BaseAgent {
             // Strip templateParameters so a model-supplied conversationId can never break FK_AIAgentRun_ConversationID (V7)
             delete (cleanedSubAgent as { templateParameters?: Record<string, unknown> }).templateParameters;
 
+            if (subAgentName === SKIP_COMPONENT_BUILDER_NAME) {
+                this.attachComponentBuilderContext(params, 'high');
+            }
+
             if (decision.step === 'Sub-Agent' || (decision.step === 'Success' && decision.terminate)) {
                 return {
                     ...decision,
@@ -510,6 +520,9 @@ export class SkipLocalAgent extends BaseAgent {
                         newPayload: decision.newPayload ?? params.payload,
                     };
                 }
+                if (targetSubAgent === SKIP_COMPONENT_BUILDER_NAME) {
+                    this.attachComponentBuilderContext(params, compact.confidence ?? 'high');
+                }
                 return {
                     step: 'Sub-Agent',
                     terminate: false,
@@ -526,6 +539,59 @@ export class SkipLocalAgent extends BaseAgent {
         }
 
         return decision;
+    }
+
+    /**
+     * Attach `routingHint` and `promotionContext` onto `params.data` when the router
+     * delegates a turn to `Skip: Component Builder`.
+     */
+    private attachComponentBuilderContext(
+        params: ExecuteAgentParams,
+        confidence: 'high' | 'medium' | 'low',
+    ): void {
+        const dataRecord = (params.data || {}) as {
+            skipRouterState?: SkipRouterState;
+            routingHint?: SkipRoutingHint;
+            promotionContext?: SkipPromotionContext;
+        };
+        const routerState = dataRecord.skipRouterState;
+        if (!routerState) {
+            return;
+        }
+
+        let routingHint = dataRecord.routingHint;
+        if (!routingHint) {
+            if (routerState.attachedComponent) {
+                routingHint = {
+                    intent: 'modify',
+                    confidence,
+                    targetArtifactId: routerState.attachedComponent.id,
+                };
+            } else if (!routerState.pendingBrainQuestion && routerState.payloadStage === 'none') {
+                routingHint = {
+                    intent: 'build',
+                    confidence,
+                };
+            }
+        }
+
+        let promotionContext = dataRecord.promotionContext;
+        if (
+            !promotionContext &&
+            !routerState.attachedComponent &&
+            routerState.lastDelegate &&
+            routerState.lastDelegate !== SKIP_COMPONENT_BUILDER_NAME
+        ) {
+            promotionContext = extractPromotionContext(params, routerState) ?? undefined;
+        }
+
+        if (routingHint || promotionContext) {
+            params.data = {
+                ...(params.data || {}),
+                ...(routingHint ? { routingHint } : {}),
+                ...(promotionContext ? { promotionContext } : {}),
+            };
+        }
     }
 
     /**

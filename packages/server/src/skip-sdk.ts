@@ -26,6 +26,8 @@ import {
     SkipRetryAction,
     SkipErrorDetail,
     SkipClientCapability,
+    SkipRoutingHint,
+    SkipPromotionContext,
 } from '@askskip/types';
 import { createRequire } from 'node:module';
 import { isValidUUID, requireValidUUID } from './uuid-guard.js';
@@ -173,6 +175,16 @@ export interface SkipCallOptions {
      * correlation and debugging.
      */
     externalReferenceID?: string;
+
+    /**
+     * Optional routing hint forwarded from `SkipLocalAgent`.
+     */
+    routingHint?: SkipRoutingHint;
+
+    /**
+     * Optional context carried when a local answer is promoted to a reusable component.
+     */
+    promotionContext?: SkipPromotionContext;
 
     /**
      * Internal flag to prevent infinite retry loops during callback key re-provisioning.
@@ -581,7 +593,9 @@ export class SkipSDK {
             forceEntityRefresh = false,
             includeCallbackAuth = true,
             payload,
-            externalReferenceID
+            externalReferenceID,
+            routingHint,
+            promotionContext
         } = options;
 
         // Build base request with metadata
@@ -623,7 +637,9 @@ export class SkipSDK {
             externalReferenceID,
             databasePlatform: baseRequest.databasePlatform,
             clientCapabilities: [...CLIENT_CAPABILITIES],
-            skipSDKVersion: SKIP_SDK_VERSION
+            skipSDKVersion: SKIP_SDK_VERSION,
+            ...(routingHint ? { routingHint } : {}),
+            ...(promotionContext ? { promotionContext } : {})
         };
 
         return request;

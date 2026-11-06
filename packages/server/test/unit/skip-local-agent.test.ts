@@ -622,6 +622,13 @@ describe('SkipLocalAgent.executeAgentInternal routing & fallback', () => {
             agent: { ID: SKIP_AGENT_ID, Name: 'Skip' } as never,
             contextUser: USER,
             conversationId: CONVERSATION_ID,
+            payload: {
+                title: 'Active Members by Tier',
+                queryName: 'GetActiveMembersByTier',
+                categoryPath: 'Golden-Queries/Membership',
+                sql: 'SELECT Tier, COUNT(*) FROM vwMembers GROUP BY Tier',
+                interpretation: 'Gold tier accounts for 62% of active members.',
+            },
             conversationMessages: [{ role: 'user', content: 'Build a reusable component for this' }],
         };
         const config = { childPrompt: { ID: 'router-prompt' } } as unknown as AgentConfiguration;
@@ -631,6 +638,18 @@ describe('SkipLocalAgent.executeAgentInternal routing & fallback', () => {
         expect(baseExecuteInternalMock).not.toHaveBeenCalled();
         expect(executeNextStepMock).toHaveBeenCalledTimes(1);
         expect(result.finalStep.message).toBe('Built interactive component');
+        expect((params.data as Record<string, unknown>).routingHint).toEqual({
+            intent: 'build',
+            confidence: 'high',
+        });
+        expect((params.data as Record<string, unknown>).promotionContext).toEqual({
+            title: 'Active Members by Tier',
+            queryName: 'GetActiveMembersByTier',
+            categoryPath: 'Golden-Queries/Membership',
+            sql: 'SELECT Tier, COUNT(*) FROM vwMembers GROUP BY Tier',
+            summary: 'Gold tier accounts for 62% of active members.',
+            sourceSubAgent: null,
+        });
     });
 
     it('runs the Loop router prompt when configured and returns its delegated sub-agent result', async () => {

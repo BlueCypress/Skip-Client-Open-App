@@ -19,7 +19,9 @@ import {
     SkipAPIClarifyingQuestionResponse,
     SkipAPIArtifactRequest,
     SkipMessage,
-    SkipRequestPhase
+    SkipRequestPhase,
+    SkipRoutingHint,
+    SkipPromotionContext
 } from "@askskip/types";
 import { isValidUUID, requireValidUUID } from "./uuid-guard.js";
 import { SkipSDK, SkipCallOptions } from "./skip-sdk.js";
@@ -181,6 +183,10 @@ export class SkipProxyAgent extends BaseAgent {
         );
 
         // Prepare Skip SDK call options
+        const dataRecord = (params.data || {}) as {
+            routingHint?: SkipRoutingHint;
+            promotionContext?: SkipPromotionContext;
+        };
         const skipOptions: SkipCallOptions = {
             payload: params.payload,
             messages: skipMessages,
@@ -196,6 +202,8 @@ export class SkipProxyAgent extends BaseAgent {
             forceEntityRefresh: context.forceEntityRefresh || false,
             includeCallbackAuth: true,
             externalReferenceID: this.AgentRun?.ID ?? undefined,
+            routingHint: dataRecord.routingHint,
+            promotionContext: dataRecord.promotionContext,
             onStatusUpdate: (message: string, responsePhase?: string) => {
                 // Forward Skip status updates to MJ progress callback
                 if (params.onProgress) {

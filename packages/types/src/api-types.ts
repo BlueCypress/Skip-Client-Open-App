@@ -249,12 +249,50 @@ export class SkipAPIRequest {
      * a Skip run to a client build — gate behavior on `clientCapabilities`, not on this.
      */
     skipSDKVersion?: string;
+
+    /**
+     * Optional routing hint supplied by `SkipLocalAgent` when it has high confidence in the
+     * target intent (`build`, `modify`, `approve`, `analyze`) or target component artifact ID.
+     */
+    routingHint?: SkipRoutingHint;
+
+    /**
+     * Optional context carried when a user promotes a local sub-agent answer (e.g., from
+     * `Skip: Data Answerer` or `Skip: Visualizer`) into a reusable interactive component via
+     * `"Build a reusable component for this"`. Allows Skip Brain's Requirements Expert and
+     * Data Expert to reuse the validated query or SQL rather than starting from scratch.
+     */
+    promotionContext?: SkipPromotionContext;
+}
+
+/**
+ * Routing hint passed from `SkipLocalAgent` to Skip Brain (`plan612.md` §6).
+ */
+export interface SkipRoutingHint {
+    intent: 'build' | 'modify' | 'approve' | 'analyze';
+    confidence: 'high' | 'medium' | 'low';
+    targetArtifactId?: string;
+}
+
+/**
+ * Validated query and summary context carried when a local answer is promoted to
+ * `Skip: Component Builder` (`plan612.md` §3.2 & §6).
+ */
+export interface SkipPromotionContext {
+    queryName?: string;
+    categoryPath?: string;
+    sql?: string;
+    title?: string;
+    summary?: string;
+    sourceSubAgent?: string | null;
 }
 
 /** Optional features a Skip SDK declares in {@link SkipAPIRequest.clientCapabilities}. */
 export const SkipClientCapability = {
     /** The client forwards a response's `artifactRequest` to MJ as an `artifactDirective`. */
     ArtifactDirective: 'artifactDirective',
+    /** The client runs `SkipLocalAgent` for local data answers, schema guide, analysis, and quick charts. */
+    SkipLocal: 'skipLocal',
 } as const;
 
 export type SkipClientCapability = typeof SkipClientCapability[keyof typeof SkipClientCapability];
