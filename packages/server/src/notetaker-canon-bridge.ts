@@ -630,7 +630,7 @@ export async function promoteNoteToCanon(
         edgeEntity.Confidence = edge.confidenceScore ?? 0.9;
         edgeEntity.Status = 'Approved';
         edgeEntity.Description = edge.rationale ?? null;
-        edgeEntity.Origin = 'Notetaker';
+        edgeEntity.Origin = 'Declared';
 
         const saved = typeof edgeEntity.Save === 'function' ? await (edgeEntity.Save as () => Promise<boolean>)() : false;
         if (saved) {
