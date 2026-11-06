@@ -263,6 +263,22 @@ export class SkipAPIRequest {
      * Data Expert to reuse the validated query or SQL rather than starting from scratch.
      */
     promotionContext?: SkipPromotionContext;
+
+    /**
+     * Optional MJ Canon domain knowledge (governed concepts, semantic edges, and collapsed domain document).
+     */
+    canon?: SkipCanonMetadata;
+
+    /**
+     * Per-section content hashes sent in place of full catalog fields when the Brain advertises
+     * `metadataCache` in `serverCapabilities`.
+     */
+    metadataRefs?: Partial<Record<SkipMetadataSection, SkipMetadataRef>>;
+
+    /**
+     * Canonical JSON strings for sections requested by the Brain on a `metadata_cache_miss` resend.
+     */
+    metadataContent?: Partial<Record<SkipMetadataSection, string>>;
 }
 
 /**
@@ -293,9 +309,99 @@ export const SkipClientCapability = {
     ArtifactDirective: 'artifactDirective',
     /** The client runs `SkipLocalAgent` for local data answers, schema guide, analysis, and quick charts. */
     SkipLocal: 'skipLocal',
+    /** The client supports content-hashed metadata caching (`metadataRefs` / `metadataContent`). */
+    MetadataCache: 'metadataCache',
 } as const;
 
 export type SkipClientCapability = typeof SkipClientCapability[keyof typeof SkipClientCapability];
+
+/** Optional features a Skip Brain server declares in `serverCapabilities`. */
+export const SkipServerCapability = {
+    /** The Brain supports content-hashed metadata caching (`metadataRefs` / `metadataContent`). */
+    MetadataCache: 'metadataCache',
+} as const;
+
+export type SkipServerCapability = typeof SkipServerCapability[keyof typeof SkipServerCapability];
+
+/** Independently content-hashed metadata sections in {@link SkipAPIRequest}. */
+export const SkipMetadataSection = {
+    entities: 'entities',
+    queries: 'queries',
+    queryCatalog: 'queryCatalog',
+    notes: 'notes',
+    noteTypes: 'noteTypes',
+    canon: 'canon',
+} as const;
+
+export type SkipMetadataSection = typeof SkipMetadataSection[keyof typeof SkipMetadataSection];
+
+/** Content hash reference for a single {@link SkipMetadataSection}. */
+export interface SkipMetadataRef {
+    /** Lowercase hex SHA-256 of `${formatVersion}:${canonicalString}`. */
+    hash: string;
+    /** Format version included in the hashed bytes; bump to invalidate cached copies. */
+    formatVersion: number;
+    /** UTF-8 byte length of the canonical JSON string, for logging and size limits. */
+    byteLength: number;
+    /** Optional item count in the section (e.g. number of entities or queries). */
+    itemCount?: number;
+}
+
+/** Summary of a governed concept in the client's `"MJ Canon"` graph. */
+export interface SkipCanonConceptSummary {
+    id: string;
+    name: string;
+    displayName?: string | null;
+    conceptType: string;
+    status: string;
+    definition: string;
+    antiDefinition?: string | null;
+    synonyms?: string[];
+    ownerEntityName?: string | null;
+    precedenceRank: number;
+    confidenceScore?: number | null;
+}
+
+/** Summary of a semantic edge in the client's `"MJ Canon"` graph. */
+export interface SkipCanonEdgeSummary {
+    id: string;
+    edgeType: string;
+    sourceEntityName: string;
+    sourceRecordID: string;
+    targetEntityName: string;
+    targetRecordID: string;
+    direction: string;
+    weight: number;
+    confidenceScore?: number | null;
+    status: string;
+    rationale?: string | null;
+    predicate?: string | null;
+    origin: string;
+}
+
+/** Summary of an alternate base view (ABV) in the client's `"MJ Canon"` graph. */
+export interface SkipCanonAlternateBaseViewSummary {
+    id: string;
+    entityID: string;
+    entityName?: string;
+    name: string;
+    viewName: string;
+    viewSchema: string;
+    description?: string | null;
+    filterSummary: string;
+    priority: number;
+    isDefaultForAI: boolean;
+    status: string;
+}
+
+/** Canonical domain knowledge payload carried in the `canon` metadata section. */
+export interface SkipCanonMetadata {
+    concepts: SkipCanonConceptSummary[];
+    edges: SkipCanonEdgeSummary[];
+    alternateBaseViews?: SkipCanonAlternateBaseViewSummary[];
+    /** Deterministic collapsed Markdown domain document rendered by CanonGraphEngine. */
+    domainDocument?: string;
+}
 
 /**
  * Defines the shape of the data that is returned by the Skip API Server
@@ -333,6 +439,11 @@ export class SkipAPIResponse {
      * suggested actions. The human-readable error message is in `errorDetail.message`.
      */
     errorDetail?: SkipErrorDetail;
+
+    /**
+     * Capabilities advertised by the Skip Brain server (from {@link SkipServerCapability}).
+     */
+    serverCapabilities?: string[];
 }
 
 /**

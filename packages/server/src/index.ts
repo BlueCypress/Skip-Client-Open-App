@@ -25,6 +25,7 @@ export * from './skip-agent.js';
 export * from './skip-local-agent.js';
 export * from './skip-callback-key-provisioner.js';
 export * from './skip-middleware.js';
+export * from './metadata-canonicalizer.js';
 
 /**
  * Open App server bootstrap entry point — referenced by the manifest as
