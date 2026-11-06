@@ -71,13 +71,21 @@ import type {
     TestAndProfileQuerySQLResult as TestAndProfileQuerySQLResultContract,
 } from '@askskip/types';
 import { applyWidthCap, classifyColumns, type ProfileColumn } from './profile/columnTypes.js';
-import { buildProfileSQL } from './profile/buildProfileSQL.js';
+import { buildProfileSQL, planProfileAggregates } from './profile/buildProfileSQL.js';
+import { computeProfileAggregatesInMemory } from './profile/inMemoryProfile.js';
+import { capToRequestedRows } from './profile/cappedRows.js';
 import { resolveMetadataHints } from './profile/metadataHints.js';
 import { getPrivacyPolicy } from './profile/privacyPolicy.js';
 import { shapeProfile } from './profile/shapeResponse.js';
 
 /** The profile statement's limit; the database cancels it when exceeded (MJ 6.1.5+). */
 const PROFILE_TIMEOUT_MS = 15_000;
+
+/**
+ * The largest result profiled from the test leg's own rows. A profiled test fetches one row more than this; when the
+ * result fits, the statistics come from those rows and the candidate query is not run a second time.
+ */
+const IN_MEMORY_PROFILE_MAX_ROWS = 1001;
 
 // ════════════════════════════════════════════════════════════════════
 // GraphQL types
@@ -187,14 +195,20 @@ export class TestAndProfileQuerySQLResolver extends ResolverBase {
             }
 
             const spec = buildSpec(input);
-            const testResult = await this.runTestLeg(provider, spec, context.userPayload.userRecord);
+            if (!input.Profile) return await this.runTestLeg(provider, spec, context.userPayload.userRecord);
 
-            if (!input.Profile || !testResult.Success) return testResult;
+            // A profiled test fetches enough rows to profile a small result without running the query again; the
+            // caller still receives at most the rows it asked for.
+            const fetched = await this.runTestLeg(provider, { ...spec, MaxRows: profileFetchRows(spec.MaxRows) }, context.userPayload.userRecord);
+            const rows = parseRows(fetched.Results);
+            const testResult = capToRequestedRows(fetched, rows, spec.MaxRows);
+            if (!testResult.Success) return testResult;
 
             const refusal = await this.reasonProfilingCannotRun(testResult, context);
             if (refusal) return { ...testResult, ProfileUnavailableReason: refusal };
 
-            return await this.attachProfile(provider, spec, testResult, context.userPayload.userRecord);
+            const complete = rows.length <= IN_MEMORY_PROFILE_MAX_ROWS;
+            return await this.attachProfile(provider, spec, testResult, complete ? rows : null, context.userPayload.userRecord);
         } catch (error: unknown) {
             LogError(error);
             return failure(`TestAndProfileQuerySQL failed: ${describe(error)}`);
@@ -268,10 +282,13 @@ export class TestAndProfileQuerySQLResolver extends ResolverBase {
         provider: DatabaseProviderBase,
         spec: QueryExecutionSpec,
         testResult: TestAndProfileQuerySQLResult,
+        completeRows: Record<string, unknown>[] | null,
         contextUser: UserInfo,
     ): Promise<TestAndProfileQuerySQLResult> {
         try {
-            const profile = await this.computeProfile(provider, spec, testResult, contextUser);
+            const profile = completeRows
+                ? this.computeProfileInMemory(provider, spec, completeRows, contextUser)
+                : await this.computeProfile(provider, spec, testResult, contextUser);
             if (!profile) {
                 LogStatus('TestAndProfileQuerySQL: candidate SQL could not be rewritten into a profile query — returning the test result without statistics.');
                 return { ...testResult, ProfileUnavailableReason: 'unparseable' };
@@ -354,6 +371,31 @@ export class TestAndProfileQuerySQLResolver extends ResolverBase {
         return profile;
     }
 
+    /**
+     * The profile of a complete result the test leg already fetched: the same columns, typing and statistics as
+     * {@link computeProfile}, computed from those rows instead of a second run of the candidate query.
+     */
+    private computeProfileInMemory(
+        provider: DatabaseProviderBase,
+        spec: QueryExecutionSpec,
+        rows: Record<string, unknown>[],
+        contextUser: UserInfo,
+    ): QueryProfile | null {
+        const platform = provider.PlatformKey as DatabasePlatform;
+        const dialect = GetDialect(platform);
+        const columnNames = rows[0] ? Object.keys(rows[0]) : [];
+        if (columnNames.length === 0) return null;
+
+        const baseSQL = renderUncapped(spec, platform, contextUser);
+        const hints = resolveMetadataHints(baseSQL, columnNames, dialect, provider as unknown as IMetadataProvider);
+        const { profiled, skipped } = applyWidthCap(classifyColumns(columnNames, hints, rows), getPrivacyPolicy());
+        const plan = planProfileAggregates(profiled, dialect);
+        if (!plan) return null;
+
+        const aggregateRow = computeProfileAggregatesInMemory(rows, plan, platform);
+        return shapeProfile(aggregateRow, plan, profiled, skipped as ProfileSkippedColumn[]);
+    }
+
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -391,6 +433,11 @@ function renderUncapped(spec: QueryExecutionSpec, platform: DatabasePlatform, co
         Dependencies: spec.Dependencies,
         OriginalSQL: spec.SQL,
     }).FinalSQL;
+}
+
+/** Rows a profiled test fetches: one more than the in-memory limit, so a result that fits is known to be complete. */
+function profileFetchRows(requested: number | undefined): number {
+    return Math.max(requested ?? 100, IN_MEMORY_PROFILE_MAX_ROWS + 1);
 }
 
 function parseRows(serialized: string | undefined): Record<string, unknown>[] {
