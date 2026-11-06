@@ -205,6 +205,9 @@ describe('ensureSkipRecords & removeSkipRecords (SkipLocalAgent + 5 sub-agents)'
             expect(sub.MessageMode).toBe('All');
             expect(sub.ModelSelectionMode).toBe('Agent');
             expect(sub.ChatHandlingOption).toBeNull();
+            expect(sub.InjectNotes).toBe(true);
+            expect(sub.MaxNotesToInject).toBe(10);
+            expect(sub.NoteInjectionStrategy).toBe('Recent');
             expect(sub.Status).toBe('Active');
         }
         expect(createdAgents[0].DriverClass).toBe('SkipProxyAgent');

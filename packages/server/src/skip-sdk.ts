@@ -44,6 +44,7 @@ import {
     brainSupportsMetadataCache,
     recordBrainCapabilities,
 } from './metadata-canonicalizer.js';
+import { enrichCanonWithAgentNotes } from './notetaker-canon-bridge.js';
 import { DataContext } from '@memberjunction/data-context';
 import { IMetadataProvider, UserInfo, LogStatus, LogError, Metadata, RunQuery, RunView, EntityInfo, BaseEntity, BaseEntityEvent, AllMetadata } from '@memberjunction/core';
 import * as coreEntitiesModule from '@memberjunction/core-entities';
@@ -360,6 +361,8 @@ export class SkipSDK {
     private static __canonicalEntitiesCache: CanonicalizedMetadataSection | null = null;
     private static __canonicalQueriesCache: CanonicalizedMetadataSection | null = null;
     private static __canonicalQueryCatalogCache: CanonicalizedMetadataSection | null = null;
+    private static __canonicalNotesCache: CanonicalizedMetadataSection | null = null;
+    private static __canonicalNoteTypesCache: CanonicalizedMetadataSection | null = null;
     private static __canonMetadataCache: SkipCanonMetadata | null = null;
     private static __canonicalCanonCache: CanonicalizedMetadataSection | null = null;
 
@@ -402,6 +405,15 @@ export class SkipSDK {
         'mj: concepts',
         'mj: concept aliases',
         'mj: alternate base views',
+    ]);
+
+    /**
+     * Agent note metadata entities (lowercased) whose runtime writes invalidate both the
+     * notes/noteTypes caches and the Notetaker-enriched canon cache.
+     */
+    private static readonly NOTE_METADATA_ENTITIES: ReadonlySet<string> = new Set([
+        'mj: ai agent notes',
+        'mj: ai agent note types',
     ]);
 
     /**
@@ -831,8 +843,14 @@ export class SkipSDK {
         }
 
         if (includeNotes) {
-            result.notes = canonicalizeMetadataSection('notes', baseRequest.notes || []);
-            result.noteTypes = canonicalizeMetadataSection('noteTypes', baseRequest.noteTypes || []);
+            if (!SkipSDK.__canonicalNotesCache) {
+                SkipSDK.__canonicalNotesCache = canonicalizeMetadataSection('notes', baseRequest.notes || []);
+            }
+            if (!SkipSDK.__canonicalNoteTypesCache) {
+                SkipSDK.__canonicalNoteTypesCache = canonicalizeMetadataSection('noteTypes', baseRequest.noteTypes || []);
+            }
+            result.notes = SkipSDK.__canonicalNotesCache;
+            result.noteTypes = SkipSDK.__canonicalNoteTypesCache;
         }
 
         if (includeCanon && baseRequest.canon) {
@@ -866,7 +884,10 @@ export class SkipSDK {
         // regardless of whether full queries are included
         const queryCatalog = this.buildQueryCatalog();
         const { notes, noteTypes } = includeNotes ? await this.buildAgentNotes(contextUser) : { notes: [], noteTypes: [] };
-        const canon = includeCanon ? await this.buildCanon(contextUser, forceEntityRefresh) : undefined;
+        const rawCanon = includeCanon ? await this.buildCanon(contextUser, forceEntityRefresh) : undefined;
+        const canon = includeCanon
+            ? enrichCanonWithAgentNotes(rawCanon, notes, { entities, queries })
+            : undefined;
         // Note: requests would be built here if includeRequests is true
 
         // Setup callback auth for Skip→client callbacks if needed
@@ -1215,6 +1236,13 @@ export class SkipSDK {
             SkipSDK.__canonicalCanonCache = null;
             return;
         }
+        if (SkipSDK.NOTE_METADATA_ENTITIES.has(entityName)) {
+            SkipSDK.__canonicalNotesCache = null;
+            SkipSDK.__canonicalNoteTypesCache = null;
+            SkipSDK.__canonMetadataCache = null;
+            SkipSDK.__canonicalCanonCache = null;
+            return;
+        }
         if (!SkipSDK.SCOPE_METADATA_ENTITIES.has(entityName)) {
             return;
         }
@@ -1262,6 +1290,16 @@ export class SkipSDK {
      * Discards cached MJ Canon metadata and canonicalized section.
      */
     public static InvalidateCanonCache(): void {
+        SkipSDK.__canonMetadataCache = null;
+        SkipSDK.__canonicalCanonCache = null;
+    }
+
+    /**
+     * Discards cached AI Agent Notes, Note Types, and Notetaker-enriched Canon sections.
+     */
+    public static InvalidateNotesCache(): void {
+        SkipSDK.__canonicalNotesCache = null;
+        SkipSDK.__canonicalNoteTypesCache = null;
         SkipSDK.__canonMetadataCache = null;
         SkipSDK.__canonicalCanonCache = null;
     }
@@ -1359,13 +1397,96 @@ export class SkipSDK {
     }
 
     /**
-     * Build agent notes for Skip
+     * Builds active `SkipAPIAgentNote` and `SkipAPIAgentNoteType` metadata from `AIEngine.Instance`
+     * (or via `RunView` when `MJ: AI Agent Notes` is registered on the metadata provider).
+     * Filters to Global notes (`AgentID == null && UserID == null`), Skip-scoped notes, or notes
+     * belonging to the requesting `contextUser`.
      */
     private async buildAgentNotes(contextUser: UserInfo): Promise<{ notes: SkipAPIAgentNote[], noteTypes: SkipAPIAgentNoteType[] }> {
-        // TODO: Implement agent notes building
-        // This would query AIAgentNote entities and convert to SkipAPIAgentNote format
-        // For now, returning empty arrays
-        return { notes: [], noteTypes: [] };
+        SkipSDK.ensureMetadataEventSubscription();
+        try {
+            await AIEngine.Instance.Config(false, contextUser);
+            const engine = AIEngine.Instance as unknown as {
+                AgentNotes?: Array<Record<string, unknown>>;
+                AgentNoteTypes?: Array<Record<string, unknown>>;
+                GetAgentByName?: (name: string) => { ID?: string } | null;
+            };
+
+            let rawNotes = Array.isArray(engine.AgentNotes) ? engine.AgentNotes : [];
+            let rawNoteTypes = Array.isArray(engine.AgentNoteTypes) ? engine.AgentNoteTypes : [];
+
+            if (
+                rawNotes.length === 0 &&
+                this.Provider?.Entities?.some((e) => e.Name === 'MJ: AI Agent Notes')
+            ) {
+                const rv = new RunView();
+                const [notesRes, typesRes] = await rv.RunViews([
+                    {
+                        EntityName: 'MJ: AI Agent Notes',
+                        ExtraFilter: "Status = 'Active'",
+                        ResultType: 'simple',
+                    },
+                    {
+                        EntityName: 'MJ: AI Agent Note Types',
+                        ExtraFilter: '',
+                        ResultType: 'simple',
+                    },
+                ], contextUser);
+                if (notesRes?.Success) rawNotes = (notesRes.Results ?? []) as Array<Record<string, unknown>>;
+                if (typesRes?.Success) rawNoteTypes = (typesRes.Results ?? []) as Array<Record<string, unknown>>;
+            }
+
+            const skipAgentId = engine.GetAgentByName?.('Skip')?.ID;
+            const userId = contextUser?.ID;
+
+            const filteredNotes = rawNotes.filter((n) => {
+                const status = String(n.Status ?? 'Active');
+                if (status !== 'Active') return false;
+
+                const noteAgentId = typeof n.AgentID === 'string' ? n.AgentID : null;
+                const noteAgentName = typeof n.Agent === 'string' ? n.Agent : '';
+                const noteUserId = typeof n.UserID === 'string' ? n.UserID : null;
+
+                const agentMatches =
+                    !noteAgentId ||
+                    (skipAgentId ? UUIDsEqual(noteAgentId, skipAgentId) : false) ||
+                    noteAgentName === 'Skip' ||
+                    noteAgentName.startsWith('Skip:');
+
+                const userMatches =
+                    !noteUserId ||
+                    (userId ? UUIDsEqual(noteUserId, userId) : false);
+
+                return agentMatches && userMatches;
+            });
+
+            const noteTypes: SkipAPIAgentNoteType[] = rawNoteTypes.map((nt) => ({
+                id: String(nt.ID ?? ''),
+                name: String(nt.Name ?? ''),
+                description: String(nt.Description ?? ''),
+            }));
+
+            const notes: SkipAPIAgentNote[] = filteredNotes.map((n) => {
+                const noteUserId = typeof n.UserID === 'string' && n.UserID.length > 0 ? n.UserID : null;
+                const createdRaw = n.__mj_CreatedAt ?? n.CreatedAt;
+                const updatedRaw = n.__mj_UpdatedAt ?? n.UpdatedAt ?? createdRaw;
+                return {
+                    id: String(n.ID ?? ''),
+                    agentNoteTypeId: String(n.AgentNoteTypeID ?? ''),
+                    agentNoteType: String(n.AgentNoteType ?? n.Type ?? 'Context'),
+                    createdAt: createdRaw instanceof Date ? createdRaw : new Date(String(createdRaw ?? 0)),
+                    updatedAt: updatedRaw instanceof Date ? updatedRaw : new Date(String(updatedRaw ?? 0)),
+                    note: String(n.Note ?? ''),
+                    type: noteUserId ? 'User' : 'Global',
+                    userId: noteUserId,
+                    user: typeof n.User === 'string' ? n.User : null,
+                };
+            });
+
+            return { notes, noteTypes };
+        } catch {
+            return { notes: [], noteTypes: [] };
+        }
     }
 
     /**
