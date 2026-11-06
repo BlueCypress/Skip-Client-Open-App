@@ -35,7 +35,24 @@ import {
     resolveSkipApiKey,
     resolveSkipRegistryURI,
 } from './skip-config.js';
-import { SKIP_AGENT_PROMPT_SPECS } from './skip-local-prompts.js';
+import {
+    SKIP_AGENT_ID,
+    SKIP_COMPONENT_BUILDER_AGENT_ID,
+    SKIP_DATA_ANSWERER_AGENT_ID,
+    SKIP_ANALYST_AGENT_ID,
+    SKIP_SCHEMA_GUIDE_AGENT_ID,
+    SKIP_VISUALIZER_AGENT_ID,
+    SKIP_AGENT_PROMPT_SPECS,
+} from './skip-local-prompts.js';
+
+export {
+    SKIP_AGENT_ID,
+    SKIP_COMPONENT_BUILDER_AGENT_ID,
+    SKIP_DATA_ANSWERER_AGENT_ID,
+    SKIP_ANALYST_AGENT_ID,
+    SKIP_SCHEMA_GUIDE_AGENT_ID,
+    SKIP_VISUALIZER_AGENT_ID,
+};
 
 /** Credential type used for the per-registry API keys stored below. */
 const API_KEY_CREDENTIAL_TYPE = 'API Key';
@@ -50,12 +67,6 @@ import type { ResolvedSkipRegistryURI } from './skip-config.js';
  * MJ core ships `deleteRecord` tombstones for these IDs, but on instances where the Open
  * App is installed the DELETE is a no-op (FK references from agent run history block it).
  */
-export const SKIP_AGENT_ID = 'A829FAAC-9E64-440C-B650-83F92A37E990';
-export const SKIP_COMPONENT_BUILDER_AGENT_ID = 'B930FBBD-AF75-451D-A761-94FA3B48FA01';
-export const SKIP_DATA_ANSWERER_AGENT_ID = 'C1410CCE-B086-462E-B872-A50B4C590B12';
-export const SKIP_ANALYST_AGENT_ID = 'D2521DDF-C197-473F-C983-B61C5D6A1C23';
-export const SKIP_SCHEMA_GUIDE_AGENT_ID = 'E3632EE0-D2A8-4840-DA94-C72D6E7B2D34';
-export const SKIP_VISUALIZER_AGENT_ID = 'F4743FF1-E3B9-4951-EB05-D83E7F8C3E45';
 const SKIP_REGISTRY_ID = 'B2F8C247-D22E-4991-9A69-0F73954A68D6';
 
 export interface SkipSubAgentSpec {
