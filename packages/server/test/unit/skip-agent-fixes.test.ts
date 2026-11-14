@@ -40,7 +40,13 @@ vi.mock('@memberjunction/core', () => ({
         RunView = runViewMock;
     },
     UserInfo: class {},
+    // MJ 6.1 schema: no ReplacedAt / BranchID, so the history filter is the conversation alone
+    Metadata: class {
+        EntityByName = () => undefined;
+    },
 }));
+
+vi.mock('@memberjunction/core-entities', () => ({ ConversationEngine: class {} }));
 
 vi.mock('@memberjunction/data-context', () => ({ DataContext: class {} }));
 
@@ -82,7 +88,7 @@ function detailRow(id: string, role: DetailRow['Role'], message: string): Detail
 }
 
 type PrivateAgent = {
-    loadMessagesFromDatabase(conversationId: string, contextUser: UserInfo): Promise<SkipMessage[]>;
+    loadMessagesFromDatabase(conversationId: string, branchId: string | undefined, contextUser: UserInfo): Promise<SkipMessage[]>;
     resolveRequestPhase(lastRunId: string | null | undefined, contextUser: UserInfo): Promise<string>;
     handleAnalysisComplete(response: SkipAPIAnalysisCompleteResponse): {
         step: string;
@@ -136,7 +142,7 @@ describe('loadMessagesFromDatabase', () => {
             ],
         });
 
-        const messages = await agent().loadMessagesFromDatabase(CONVERSATION_ID, USER);
+        const messages = await agent().loadMessagesFromDatabase(CONVERSATION_ID, undefined, USER);
 
         expect(messages.map(m => m.role)).toEqual(['user', 'system', 'user']);
         expect(messages.some(m => m.content.includes('Pipeline failed'))).toBe(false);
@@ -154,7 +160,7 @@ describe('loadMessagesFromDatabase', () => {
             ],
         });
 
-        const messages = await agent().loadMessagesFromDatabase(CONVERSATION_ID, USER);
+        const messages = await agent().loadMessagesFromDatabase(CONVERSATION_ID, undefined, USER);
 
         expect(messages).toHaveLength(3);
         expect(messages[messages.length - 1].content).toBe('second question');
@@ -170,7 +176,7 @@ describe('loadMessagesFromDatabase', () => {
             ],
         });
 
-        const messages = await agent().loadMessagesFromDatabase(CONVERSATION_ID, USER);
+        const messages = await agent().loadMessagesFromDatabase(CONVERSATION_ID, undefined, USER);
 
         expect(messages).toHaveLength(1);
         expect(messages[0].role).toBe('user');
@@ -178,7 +184,7 @@ describe('loadMessagesFromDatabase', () => {
 
     it('rejects a non-UUID conversation id before touching the database', async () => {
         await expect(
-            agent().loadMessagesFromDatabase("abc' OR 1=1 --", USER)
+            agent().loadMessagesFromDatabase("abc' OR 1=1 --", undefined, USER)
         ).rejects.toThrow(/expected a UUID/);
 
         expect(runViewMock).not.toHaveBeenCalled();
@@ -187,7 +193,7 @@ describe('loadMessagesFromDatabase', () => {
     it('interpolates only the validated UUID into the filter', async () => {
         runViewMock.mockResolvedValue({ Success: true, Results: [] });
 
-        await agent().loadMessagesFromDatabase(CONVERSATION_ID, USER);
+        await agent().loadMessagesFromDatabase(CONVERSATION_ID, undefined, USER);
 
         expect(runViewMock).toHaveBeenCalledWith(
             expect.objectContaining({ ExtraFilter: `ConversationID='${CONVERSATION_ID}'` }),

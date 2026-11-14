@@ -22,6 +22,7 @@ import {
     SkipRequestPhase
 } from "@askskip/types";
 import { isValidUUID, requireValidUUID } from "./uuid-guard.js";
+import { buildConversationHistoryFilter, resolveConversationHistoryCapabilities } from "./conversation-history-filter.js";
 import { SkipSDK, SkipCallOptions } from "./skip-sdk.js";
 import { DataContext } from "@memberjunction/data-context";
 import { LogStatus, LogError, RunView, UserInfo } from "@memberjunction/core";
@@ -168,7 +169,7 @@ export class SkipProxyAgent extends BaseAgent {
         // This ensures we get real UUIDs from MJConversationDetailEntity records
         let skipMessages: SkipMessage[];
         if (conversationId && params.contextUser) {
-            skipMessages = await this.loadMessagesFromDatabase(conversationId, params.contextUser);
+            skipMessages = await this.loadMessagesFromDatabase(conversationId, this.conversationBranchID(params), params.contextUser);
         } else {
             // Fallback to converting provided conversation messages
             skipMessages = this.convertMessagesToSkipFormat(params.conversationMessages || []);
@@ -285,16 +286,27 @@ export class SkipProxyAgent extends BaseAgent {
      * Load conversation messages from database with real UUIDs using MemberJunction's RunView pattern
      * This is the preferred method as it ensures all messages have proper conversationDetailIDs
      */
-    private async loadMessagesFromDatabase(conversationId: string, contextUser: UserInfo): Promise<SkipMessage[]> {
+    private async loadMessagesFromDatabase(
+        conversationId: string,
+        branchId: string | undefined,
+        contextUser: UserInfo
+    ): Promise<SkipMessage[]> {
         try {
             // conversationId is caller-supplied — a validated UUID cannot carry SQL injection payloads
             const safeConversationId = requireValidUUID(conversationId, 'SkipProxyAgent conversationId');
 
+            // On MJ 6.2+ this drops rows a rerun replaced and rows on other branches, as MJ's own
+            // agent-history loader does; on 6.1 it is the conversation filter alone.
+            const extraFilter = await buildConversationHistoryFilter(
+                safeConversationId, branchId, contextUser, resolveConversationHistoryCapabilities()
+            );
+
             const rv = new RunView();
             const result = await rv.RunView<MJConversationDetailEntity>({
                 EntityName: 'MJ: Conversation Details',
-                ExtraFilter: `ConversationID='${safeConversationId}'`,
-                OrderBy: '__mj_CreatedAt ASC'
+                ExtraFilter: extraFilter,
+                // Conversation order, as MJ uses: a rerun's answer is written later but keeps its turn's place
+                OrderBy: 'Sequence ASC, __mj_CreatedAt ASC'
             }, contextUser);
 
             if (!result.Success) {
@@ -325,6 +337,15 @@ export class SkipProxyAgent extends BaseAgent {
             LogError(`[SkipProxyAgent] Error loading messages from database: ${error}`);
             throw error;
         }
+    }
+
+    /**
+     * The branch this run answers. `ExecuteAgentParams.ConversationBranchID` exists from MJ 6.2;
+     * the 6.1 typings the Open App builds against do not declare it.
+     */
+    private conversationBranchID(params: ExecuteAgentParams): string | undefined {
+        const branchAware: ExecuteAgentParams & { ConversationBranchID?: string } = params;
+        return branchAware.ConversationBranchID;
     }
 
     /**
