@@ -178,7 +178,7 @@ export class SkipMiddleware extends BaseServerMiddleware {
                     return;
                 }
 
-                const { agentName, agentPayload, optimalOutput, scoring } = req.body;
+                const { agentName, agentPayload, messages, optimalOutput, scoring } = req.body;
                 if (!agentName || !agentPayload || !optimalOutput || !scoring) {
                     res.status(400).json({ success: false, error: 'Missing required fields: agentName, agentPayload, optimalOutput, scoring' });
                     return;
@@ -189,6 +189,7 @@ export class SkipMiddleware extends BaseServerMiddleware {
                 const result = await sdk.evalRunAgent({
                     agentName,
                     agentPayload,
+                    messages,
                     optimalOutput,
                     scoring,
                     contextUser: userRecord,
