@@ -225,6 +225,8 @@ export interface SkipCallResult {
 export interface SkipEvalOptions {
     agentName: string;
     agentPayload: Record<string, unknown>;
+    /** The conversation the agent sees, from the eval case's fixture. Empty history when omitted. */
+    messages?: Array<{ role: string; content: string }>;
     optimalOutput: Record<string, unknown>;
     scoring: Record<string, unknown>;
     contextUser: UserInfo;
@@ -1554,6 +1556,7 @@ export class SkipSDK {
             const evalRequest = {
                 agentName: options.agentName,
                 agentPayload: options.agentPayload,
+                messages: options.messages,
                 optimalOutput: options.optimalOutput,
                 scoring: options.scoring,
                 entityCatalog: baseRequest.entities || [],
