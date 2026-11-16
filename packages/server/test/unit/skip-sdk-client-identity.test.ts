@@ -115,10 +115,14 @@ describe('SkipSDK client identity', () => {
         vi.clearAllMocks();
     });
 
-    it('declares that it forwards artifact directives', async () => {
+    it('declares that it forwards artifact directives and supports metadata caching', async () => {
         const request = await sendOneRequest();
 
-        expect(request.clientCapabilities).toEqual([SkipClientCapability.ArtifactDirective]);
+        expect(request.clientCapabilities).toEqual([
+            SkipClientCapability.ArtifactDirective,
+            SkipClientCapability.MetadataCache,
+            SkipClientCapability.SkipLocal,
+        ]);
     });
 
     it('sends its own package version', async () => {

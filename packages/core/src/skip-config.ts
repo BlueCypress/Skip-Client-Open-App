@@ -154,21 +154,36 @@ export function resolveSkipRegistryURI(
 }
 
 /**
- * Asks the configured brain which registry name it publishes under.
- *
- * The brain is the single source of truth for this. Deriving it on the client from
- * `ASK_SKIP_URL` would be guessing: a URL is not an identity (two URLs can reach the same
- * brain, and one URL can be reassigned), and independent derivation on both sides lets
- * them disagree silently — producing `Registry not found: <name>` with no obvious cause.
- *
- * Returns `null` on any failure — unreachable brain, non-200, malformed body, or a brain
- * too old to report the field. Callers must treat `null` as "leave the record alone"
- * rather than substituting a default: creating a wrongly-named registry record is worse
- * than creating none, because it yields specs pointing at a registry nobody serves.
+ * Result of probing a Skip Brain's `/registry/api/v1/registry` endpoint.
  */
-export async function fetchSkipRegistryName(
-    options: { skipURL?: string; apiKey?: string; timeoutMs?: number } = {},
-): Promise<string | null> {
+export interface SkipRegistryInfo {
+    /** Registry name advertised by the brain, or `null` if unavailable/omitted. */
+    registryName: string | null;
+    /** Server-side protocol capabilities advertised by the brain (e.g. `['metadataCache']`). */
+    serverCapabilities: string[];
+}
+
+/**
+ * Options for probing the Skip Brain's `/registry/api/v1/registry` endpoint.
+ */
+export interface FetchSkipRegistryOptions {
+    skipURL?: string;
+    apiKey?: string;
+    timeoutMs?: number;
+    /** Optional callback invoked with the full registry info response (including `serverCapabilities`). */
+    onRegistryInfo?: (info: SkipRegistryInfo) => void;
+}
+
+/**
+ * Queries the configured brain's `/registry/api/v1/registry` endpoint for its published
+ * registry name and supported server capabilities.
+ *
+ * Returns `{ registryName: null, serverCapabilities: [] }` on any failure — unreachable
+ * brain, non-200, or malformed body.
+ */
+export async function fetchSkipRegistryInfo(
+    options: FetchSkipRegistryOptions = {},
+): Promise<SkipRegistryInfo> {
     const baseURL = stripTrailingSlashes(options.skipURL ?? process.env.ASK_SKIP_URL ?? DEFAULT_SKIP_BASE_URL);
     const url = `${baseURL}/registry/api/v1/registry`;
 
@@ -184,24 +199,51 @@ export async function fetchSkipRegistryName(
         });
         if (!response.ok) {
             LogError(`[skip-config] Registry info request to ${url} returned HTTP ${response.status}.`);
-            return null;
+            return { registryName: null, serverCapabilities: [] };
         }
 
-        const body = (await response.json()) as { registryName?: unknown };
+        const body = (await response.json()) as {
+            registryName?: unknown;
+            serverCapabilities?: unknown;
+        };
         const name = typeof body.registryName === 'string' ? body.registryName.trim() : '';
-        if (!name) {
-            // A brain predating per-environment naming omits the field entirely. That is
-            // not an error — it simply cannot tell us, so the caller leaves things as they are.
-            return null;
-        }
-        return name;
+        const serverCapabilities = Array.isArray(body.serverCapabilities)
+            ? body.serverCapabilities.filter((c): c is string => typeof c === 'string')
+            : [];
+
+        const info: SkipRegistryInfo = {
+            registryName: name || null,
+            serverCapabilities,
+        };
+        options.onRegistryInfo?.(info);
+        return info;
     } catch (error: unknown) {
         LogError(
             `[skip-config] Could not read the registry name from ${url}: ` +
             `${error instanceof Error ? error.message : String(error)}`,
         );
-        return null;
+        return { registryName: null, serverCapabilities: [] };
     }
+}
+
+/**
+ * Asks the configured brain which registry name it publishes under.
+ *
+ * The brain is the single source of truth for this. Deriving it on the client from
+ * `ASK_SKIP_URL` would be guessing: a URL is not an identity (two URLs can reach the same
+ * brain, and one URL can be reassigned), and independent derivation on both sides lets
+ * them disagree silently — producing `Registry not found: <name>` with no obvious cause.
+ *
+ * Returns `null` on any failure — unreachable brain, non-200, malformed body, or a brain
+ * too old to report the field. Callers must treat `null` as "leave the record alone"
+ * rather than substituting a default: creating a wrongly-named registry record is worse
+ * than creating none, because it yields specs pointing at a registry nobody serves.
+ */
+export async function fetchSkipRegistryName(
+    options: FetchSkipRegistryOptions = {},
+): Promise<string | null> {
+    const info = await fetchSkipRegistryInfo(options);
+    return info.registryName;
 }
 
 /**

@@ -47,6 +47,7 @@
   },
   "hooks": {
     "postInstallModule": "@askskip/core/setup",
+    "postUpgradeModule": "@askskip/core/setup",
     "preRemoveModule": "@askskip/core/teardown"
   },
   "categories": [
