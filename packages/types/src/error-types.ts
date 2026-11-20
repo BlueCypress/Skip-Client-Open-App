@@ -12,6 +12,8 @@
  * Both use the `const + typeof` pattern matching SkipRequestPhase/SkipResponsePhase.
  */
 
+import type { SkipCatalogKind, SkipCatalogMissingItems } from './catalog-types.js';
+
 /**
  * Broad error classification. Maps 1:1 to the server's internal ErrorCategory.
  * Clients can switch on this for coarse handling; unknown values should be
@@ -70,6 +72,12 @@ export const SkipErrorCode = {
     missing_required_field: 'missing_required_field',
     /** A request field has an invalid format or value */
     invalid_request_format: 'invalid_request_format',
+    /**
+     * Skip doesn't hold a catalog the request referenced by hash (`catalogRefs`), or still lacks some of its
+     * items after a retry. Resend per `retryAction: resend_catalog`: the manifest and the items listed in
+     * `missingItems`, or the manifest and every changed item for the kinds in `missingKinds`.
+     */
+    catalog_miss: 'catalog_miss',
 
     // ── ai_model ────────────────────────────────────────────────────────
     /** AI provider rate limit exceeded */
@@ -122,6 +130,8 @@ export const SkipRetryAction = {
     modify_and_retry: 'modify_and_retry',
     /** Do not retry — requires user or admin intervention */
     do_not_retry: 'do_not_retry',
+    /** Resend the referenced catalogs' manifests and missing items (see `catalog_miss`) */
+    resend_catalog: 'resend_catalog',
 } as const;
 export type SkipRetryAction = typeof SkipRetryAction[keyof typeof SkipRetryAction];
 
@@ -176,4 +186,15 @@ export interface SkipErrorDetail {
      * Never contains sensitive information (credentials, internal IPs).
      */
     details?: string;
+
+    /**
+     * With `catalog_miss`: the catalog kinds whose manifest Skip doesn't hold. Resend each one's manifest and
+     * the items that changed since the last manifest Skip accepted.
+     */
+    missingKinds?: SkipCatalogKind[];
+
+    /**
+     * With `catalog_miss`: the exact item IDs Skip still lacks after it stored a resent manifest. Resend these.
+     */
+    missingItems?: SkipCatalogMissingItems[];
 }

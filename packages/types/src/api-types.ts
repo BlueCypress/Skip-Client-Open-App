@@ -20,6 +20,7 @@ import type { SkipAPIRequestAPIKey } from './auth-types.js';
 import type { SkipAPIArtifact } from './artifact-types.js';
 import type { SkipAPIAgentNote, SkipAPIAgentNoteType } from './agent-types.js';
 import type { SkipErrorDetail } from './error-types.js';
+import type { SkipCatalogItems, SkipCatalogManifests, SkipCatalogRefs } from './catalog-types.js';
 import type { DatabasePlatform } from '@memberjunction/sql-dialect';
 
 /**
@@ -155,6 +156,20 @@ export class SkipAPIRequest {
      * across all queries, not just approved ones.
      */
     queryCatalog?: SkipQueryCatalogEntry[];
+
+    /**
+     * The entity and query catalogs by reference: one manifest hash per kind. When a kind has a ref, its
+     * `entities` / `queries` array is sent empty and Skip resolves the catalog from its own cache. Skip answers
+     * `catalog_miss` when it doesn't hold a manifest; the client then retries with `catalogManifests` and
+     * `catalogItems`. Absent: the arrays carry the full catalogs (the original protocol).
+     */
+    catalogRefs?: SkipCatalogRefs;
+
+    /** Sent only on a retry after `catalog_miss`: the full manifest of each kind Skip reported missing. */
+    catalogManifests?: SkipCatalogManifests;
+
+    /** Sent only on a retry after `catalog_miss`: the items Skip is expected to lack, as canonical strings. */
+    catalogItems?: SkipCatalogItems;
 
     /**
      * The conversation ID
