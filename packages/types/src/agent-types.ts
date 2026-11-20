@@ -225,10 +225,11 @@ export class SkipAPILearningCycleRequest {
     lastLearningCycleDate: Date;
 
     /**
-     * One or more API keys that are used for AI systems that Skip will access on behalf of the API caller
-     * NOTE: This is not where you put in the bearer token for the Skip API server itself, that goes in the header of the request
+     * @deprecated Never send AI provider keys here. Skip ignores this field: it runs every request with the
+     * organization's own AI credentials, which are stored in Skip. The Skip SDK stopped sending it in 0.4.0.
+     * Retained only so older clients still type-check.
      */
-    apiKeys: SkipAPIRequestAPIKey[];
+    apiKeys?: SkipAPIRequestAPIKey[];
 }
 
 /**

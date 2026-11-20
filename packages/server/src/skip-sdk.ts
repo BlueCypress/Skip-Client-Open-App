@@ -14,7 +14,6 @@ import {
     SkipAPIClarifyingQuestionResponse,
     SkipRequestPhase,
     SkipResponsePhase,
-    SkipAPIRequestAPIKey,
     SkipQueryInfo,
     SkipQueryCatalogEntry,
     SkipAPIAgentNote,
@@ -47,7 +46,6 @@ import {
     confirmCallbackKeyDelivered,
     discardUnconfirmedCallbackKey,
 } from './skip-callback-key-provisioner.js';
-import { GetAIAPIKey } from '@memberjunction/ai';
 import { AIEngine } from '@memberjunction/aiengine';
 import { CopyScalarsAndArrays, UUIDsEqual, MJGlobal, MJEvent, MJEventType } from '@memberjunction/global';
 import mssql from 'mssql';
@@ -641,7 +639,6 @@ export class SkipSDK {
             notes: baseRequest.notes,
             noteTypes: baseRequest.noteTypes,
             userEmail: baseRequest.userEmail,
-            apiKeys: baseRequest.apiKeys,
             callingServerURL: baseRequest.callingServerURL,
             callingServerAPIKey: baseRequest.callingServerAPIKey,
             externalReferenceID,
@@ -700,7 +697,6 @@ export class SkipSDK {
             notes,
             noteTypes,
             userEmail: contextUser.Email,
-            apiKeys: this.buildAPIKeys(),
             callingServerURL,
             callingServerAPIKey,
             databasePlatform: getDbType(),
@@ -1207,38 +1203,6 @@ export class SkipSDK {
             LogError(`Failed to load input artifacts for conversation ${conversationId}: ${error}`);
             return [];
         }
-    }
-
-    /**
-     * Build API keys for AI services
-     */
-    private buildAPIKeys(): SkipAPIRequestAPIKey[] {
-        return [
-            {
-                vendorDriverName: 'OpenAILLM',
-                apiKey: GetAIAPIKey('OpenAILLM')
-            },
-            {
-                vendorDriverName: 'AnthropicLLM',
-                apiKey: GetAIAPIKey('AnthropicLLM')
-            },
-            {
-                vendorDriverName: 'GeminiLLM',
-                apiKey: GetAIAPIKey('GeminiLLM')
-            },
-            {
-                vendorDriverName: 'GroqLLM',
-                apiKey: GetAIAPIKey('GroqLLM')
-            },
-            {
-                vendorDriverName: 'MistralLLM',
-                apiKey: GetAIAPIKey('MistralLLM')
-            },
-            {
-                vendorDriverName: 'CerebrasLLM',
-                apiKey: GetAIAPIKey('CerebrasLLM')
-            }
-        ];
     }
 
     /**
