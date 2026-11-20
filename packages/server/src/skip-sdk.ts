@@ -840,7 +840,6 @@ export class SkipSDK {
             Status: q.Status,
             QualityRank: q.QualityRank,
             Reusable: q.Reusable,
-            EmbeddingVector: q.EmbeddingVector,
             EmbeddingModelID: q.EmbeddingModelID,
             EmbeddingModelName: q.EmbeddingModel,
             TechnicalDescription: q.TechnicalDescription,
