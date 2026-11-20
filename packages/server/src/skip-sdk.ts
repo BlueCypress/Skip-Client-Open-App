@@ -856,10 +856,7 @@ export class SkipSDK {
             CategoryID: q.CategoryID,
             SQL: q.GetPlatformSQL(getDbType()),
             Status: q.Status,
-            QualityRank: q.QualityRank,
             Reusable: q.Reusable,
-            EmbeddingModelID: q.EmbeddingModelID,
-            EmbeddingModelName: q.EmbeddingModel,
             TechnicalDescription: q.TechnicalDescription,
             Fields: qe.GetQueryFields(q.ID).map((f) => ({
                 ID: f.ID,
@@ -894,13 +891,7 @@ export class SkipSDK {
                 EntityID: e.EntityID,
                 Entity: e.Entity
             })),
-            SQLDialectID: q.SQLDialectID,
-            UsesTemplate: q.UsesTemplate,
             IsApproved: q.IsApproved,
-            CacheEnabled: q.CacheEnabled,
-            CacheMaxSize: q.CacheMaxSize,
-            CacheTTLMinutes: q.CacheTTLMinutes,
-            CacheValidationSQL: q.CacheValidationSQL
         }));
     }
 

@@ -52,7 +52,7 @@ vi.mock('@memberjunction/core', () => ({
 
 vi.mock('@memberjunction/core-entities', () => ({
     QueryEngine: { Instance: {
-        Queries: [{ ID: 'Q-1', Name: 'Sales', Status: 'Approved', CategoryID: null, EmbeddingVector: '[0.1,0.2]', EmbeddingModelID: 'M-1', EmbeddingModel: 'gte', GetPlatformSQL: () => 'SELECT 1' }],
+        Queries: [{ ID: 'Q-1', Name: 'Sales', Status: 'Approved', IsApproved: true, CategoryID: 'C-1', QualityRank: 3, SQLDialectID: 'D-1', UsesTemplate: true, CacheEnabled: true, CacheMaxSize: 10, CacheTTLMinutes: 5, CacheValidationSQL: 'SELECT 1', EmbeddingVector: '[0.1,0.2]', EmbeddingModelID: 'M-1', EmbeddingModel: 'gte', GetPlatformSQL: () => 'SELECT 1' }],
         Categories: [], QueryEntities: [], GetQueryFields: () => [], GetQueryParameters: () => [],
     } },
 }));
@@ -130,10 +130,14 @@ describe('SkipSDK catalogs on the wire', () => {
         expect(request.queries.map((q) => q.ID)).toEqual(['Q-1']);
     });
 
-    it('no longer sends EmbeddingVector, but keeps the embedding model', async () => {
+    it('leaves out the query properties Skip never reads, and keeps IsApproved and CategoryID', async () => {
         state.catalogByReference = false;
         const [query] = (await sendOneRequest()).queries as unknown as Record<string, unknown>[];
-        expect('EmbeddingVector' in query).toBe(false);
-        expect(query.EmbeddingModelID).toBe('M-1');
+        for (const dropped of ['EmbeddingVector', 'EmbeddingModelID', 'EmbeddingModelName', 'QualityRank', 'SQLDialectID',
+            'UsesTemplate', 'CacheEnabled', 'CacheMaxSize', 'CacheTTLMinutes', 'CacheValidationSQL']) {
+            expect(dropped in query, dropped).toBe(false);
+        }
+        expect(query.IsApproved).toBe(true);
+        expect(query.CategoryID).toBe('C-1');
     });
 });
