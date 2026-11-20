@@ -149,11 +149,9 @@ export class SkipAPIRequest {
     queries: SkipQueryInfo[];
 
     /**
-     * Lightweight catalog of ALL query names and category paths (regardless of status).
-     * Always populated regardless of the includeQueries flag, enabling accurate
-     * collision detection without the overhead of full query metadata.
-     * Includes all statuses because the database enforces name+category uniqueness
-     * across all queries, not just approved ones.
+     * @deprecated Not sent since Skip SDK 0.3.10, and ignored by Skip: it learns category paths from the queries it
+     * can see and from its own creates, and asks the client for the `Skip/` tree when it names a query. Older SDKs
+     * still send the name and category path of every query here.
      */
     queryCatalog?: SkipQueryCatalogEntry[];
 

@@ -15,7 +15,6 @@ import {
     SkipRequestPhase,
     SkipResponsePhase,
     SkipQueryInfo,
-    SkipQueryCatalogEntry,
     SkipAPIAgentNote,
     SkipAPIAgentNoteType,
     SkipAPIArtifact,
@@ -25,6 +24,7 @@ import {
     SkipRetryAction,
     SkipErrorDetail,
     SkipClientCapability,
+    SKIP_EXPOSED_QUERY_CATEGORIES,
 } from '@askskip/types';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
@@ -40,6 +40,7 @@ import { buildSkipCallbackURL, getSkipConfig, getDbType, resolveSkipApiKey, DEFA
 import type { Agent } from 'undici';
 import { getEvalDispatcher, describeEvalError } from './eval-transport.js';
 import { SkipCatalogNegotiator } from './catalog-negotiation.js';
+import { BuildExposedQueries } from './query-catalog.js';
 import {
     getSkipCallbackKey,
     resetCallbackKeyProvisioning,
@@ -635,7 +636,6 @@ export class SkipSDK {
             payload, // Pass through payload for incremental artifact building (e.g., PRD in progress)
             entities: baseRequest.entities || [],
             queries: baseRequest.queries || [],
-            queryCatalog: baseRequest.queryCatalog,
             notes: baseRequest.notes,
             noteTypes: baseRequest.noteTypes,
             userEmail: baseRequest.userEmail,
@@ -666,9 +666,6 @@ export class SkipSDK {
     ): Promise<Partial<SkipAPIRequest>> {
         const entities = includeEntities ? this.buildEntities(forceEntityRefresh) : [];
         const queries = includeQueries ? this.buildQueries() : [];
-        // Always build the lightweight query catalog for collision detection,
-        // regardless of whether full queries are included
-        const queryCatalog = this.buildQueryCatalog();
         const { notes, noteTypes } = includeNotes ? await this.buildAgentNotes(contextUser) : { notes: [], noteTypes: [] };
         // Note: requests would be built here if includeRequests is true
 
@@ -693,7 +690,6 @@ export class SkipSDK {
         return {
             entities,
             queries,
-            queryCatalog,
             notes,
             noteTypes,
             userEmail: contextUser.Email,
@@ -841,85 +837,13 @@ export class SkipSDK {
     }
 
     /**
-     * Build saved queries for Skip
+     * The queries Skip receives in its catalog: Approved queries in the exposed category roots
+     * (`exposedQueryCategories`, by default ground truth and the MJ feature categories). Skip fetches any other query
+     * it needs with the GetSkipCatalogItems callback.
      */
-    private buildQueries(status: "Pending" | "In-Review" | "Approved" | "Rejected" | "Obsolete" = 'Approved'): SkipQueryInfo[] {
-        const qe = QueryEngine.Instance;
-        const approvedQueries = qe.Queries.filter((q) => q.Status === status);
-
-        return approvedQueries.map((q) => ({
-            ID: q.ID,
-            Name: q.Name,
-            Description: q.Description,
-            Category: q.Category,
-            CategoryPath: this.buildQueryCategoryPath(qe, q.CategoryID),
-            CategoryID: q.CategoryID,
-            SQL: q.GetPlatformSQL(getDbType()),
-            Status: q.Status,
-            Reusable: q.Reusable,
-            TechnicalDescription: q.TechnicalDescription,
-            Fields: qe.GetQueryFields(q.ID).map((f) => ({
-                ID: f.ID,
-                QueryID: f.QueryID,
-                Name: f.Name,
-                Description: f.Description,
-                Sequence: f.Sequence,
-                SQLBaseType: f.SQLBaseType,
-                SQLFullType: f.SQLFullType,
-                SourceEntityID: f.SourceEntityID,
-                SourceEntity: f.SourceEntity,
-                SourceFieldName: f.SourceFieldName,
-                IsComputed: f.IsComputed,
-                ComputationDescription: f.ComputationDescription,
-                IsSummary: f.IsSummary,
-                SummaryDescription: f.SummaryDescription
-            })),
-            Parameters: qe.GetQueryParameters(q.ID).map((p) => ({
-                ID: p.ID,
-                QueryID: p.QueryID,
-                Name: p.Name,
-                Description: p.Description,
-                Type: p.Type,
-                IsRequired: p.IsRequired,
-                DefaultValue: p.DefaultValue,
-                SampleValue: p.SampleValue,
-                ValidationFilters: p.ValidationFilters
-            })),
-            Entities: qe.QueryEntities.filter(e => UUIDsEqual(e.QueryID, q.ID)).map((e) => ({
-                ID: e.ID,
-                QueryID: e.QueryID,
-                EntityID: e.EntityID,
-                Entity: e.Entity
-            })),
-            IsApproved: q.IsApproved,
-        }));
-    }
-
-    /**
-     * Recursively build category path for a query
-     */
-    private buildQueryCategoryPath(qe: QueryEngine, categoryID: string): string {
-        const cat = qe.Categories.find((c) => UUIDsEqual(c.ID, categoryID));
-        if (!cat) return '';
-        if (!cat.ParentID) return cat.Name;
-        const parentPath = this.buildQueryCategoryPath(qe, cat.ParentID);
-        return parentPath ? `${parentPath}/${cat.Name}` : cat.Name;
-    }
-
-    /**
-     * Build a lightweight catalog of ALL query names and category paths (regardless of status).
-     * Always called regardless of includeQueries, so collision detection
-     * has accurate data even when full query metadata is not transmitted.
-     * Includes all statuses because the database enforces name+category uniqueness
-     * across all queries, not just approved ones.
-     */
-    private buildQueryCatalog(): SkipQueryCatalogEntry[] {
-        const qe = QueryEngine.Instance;
-
-        return qe.Queries.map((q) => ({
-            Name: q.Name,
-            CategoryPath: this.buildQueryCategoryPath(qe, q.CategoryID)
-        }));
+    private buildQueries(): SkipQueryInfo[] {
+        const roots = getSkipConfig().exposedQueryCategories ?? SKIP_EXPOSED_QUERY_CATEGORIES;
+        return BuildExposedQueries(QueryEngine.Instance, roots);
     }
 
     /**

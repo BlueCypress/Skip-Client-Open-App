@@ -52,8 +52,10 @@ vi.mock('@memberjunction/core', () => ({
 
 vi.mock('@memberjunction/core-entities', () => ({
     QueryEngine: { Instance: {
-        Queries: [{ ID: 'Q-1', Name: 'Sales', Status: 'Approved', IsApproved: true, CategoryID: 'C-1', QualityRank: 3, SQLDialectID: 'D-1', UsesTemplate: true, CacheEnabled: true, CacheMaxSize: 10, CacheTTLMinutes: 5, CacheValidationSQL: 'SELECT 1', EmbeddingVector: '[0.1,0.2]', EmbeddingModelID: 'M-1', EmbeddingModel: 'gte', GetPlatformSQL: () => 'SELECT 1' }],
-        Categories: [], QueryEntities: [], GetQueryFields: () => [], GetQueryParameters: () => [],
+        Queries: [{ ID: 'Q-1', Name: 'Sales', Status: 'Approved', IsApproved: true, CategoryID: 'C-1', QualityRank: 3, SQLDialectID: 'D-1', UsesTemplate: true, CacheEnabled: true, CacheMaxSize: 10, CacheTTLMinutes: 5, CacheValidationSQL: 'SELECT 1', EmbeddingVector: '[0.1,0.2]', EmbeddingModelID: 'M-1', EmbeddingModel: 'gte', GetPlatformSQL: () => 'SELECT 1' },
+            { ID: 'Q-SKIP', Name: 'Made by Skip', Status: 'Approved', IsApproved: true, CategoryID: 'C-2', GetPlatformSQL: () => 'SELECT 2' }],
+        Categories: [{ ID: 'C-1', Name: 'Golden-Queries', ParentID: null }, { ID: 'C-2', Name: 'Skip', ParentID: null }],
+        QueryEntities: [], GetQueryFields: () => [], GetQueryParameters: () => [],
     } },
 }));
 
@@ -139,5 +141,16 @@ describe('SkipSDK catalogs on the wire', () => {
         }
         expect(query.IsApproved).toBe(true);
         expect(query.CategoryID).toBe('C-1');
+    });
+
+    it('sends only the exposed set: an Approved query outside it stays on the client', async () => {
+        state.catalogByReference = false;
+        const request = await sendOneRequest();
+        expect(request.queries.map((q) => q.ID)).toEqual(['Q-1']);
+    });
+
+    it('no longer sends queryCatalog: Skip asks for the category tree when it names a query', async () => {
+        const request = await sendOneRequest();
+        expect('queryCatalog' in request).toBe(false);
     });
 });

@@ -11,7 +11,7 @@ import { resolve, dirname, parse } from 'path';
 import { CredentialEngine } from '@memberjunction/credentials';
 import { LogError, LogStatus } from '@memberjunction/core';
 import type { UserInfo } from '@memberjunction/core';
-import { DEFAULT_SKIP_REGISTRY_NAME } from '@askskip/types';
+import { DEFAULT_SKIP_REGISTRY_NAME, SKIP_EXPOSED_QUERY_CATEGORIES } from '@askskip/types';
 
 /** Default Skip API base URL. Override with ASK_SKIP_URL env var for non-production environments. */
 export const DEFAULT_SKIP_BASE_URL = 'https://brain-prod.askskip.ai';
@@ -270,6 +270,17 @@ export interface SkipClientConfig {
      * @default true
      */
     catalogByReference?: boolean;
+    /**
+     * Category roots whose queries the SDK sends in its query catalog: a query is sent when its category path
+     * equals a root or sits under it. Skip fetches any other query it needs on demand. Defaults to ground truth
+     * queries and the MJ feature categories (`SKIP_EXPOSED_QUERY_CATEGORIES` in `@askskip/types`).
+     *
+     * Set in `skip.config.cjs`:
+     * ```js
+     * module.exports = { exposedQueryCategories: ['Golden-Queries', 'MJ/Lists', 'MJ/Tags', 'Reports/Finance'] };
+     * ```
+     */
+    exposedQueryCategories?: string[];
 }
 
 /** Default for {@link SkipClientConfig.evalRunAgentTimeoutMs}: 10 minutes. */
@@ -398,6 +409,26 @@ export function resolveEvalRunAgentTimeoutMs(cfg: Record<string, unknown> | null
     return DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS;
 }
 
+/**
+ * Extracts `exposedQueryCategories` from the loaded config, falling back to the default exposed set when it is
+ * absent or not a list of non-empty strings. An invalid value is logged rather than thrown: boot paths must survive
+ * a bad config.
+ */
+export function resolveExposedQueryCategories(cfg: Record<string, unknown> | null): string[] {
+    const value = cfg?.exposedQueryCategories;
+    if (value === undefined || value === null) {
+        return [...SKIP_EXPOSED_QUERY_CATEGORIES];
+    }
+    if (Array.isArray(value) && value.every((v) => typeof v === 'string' && v.trim().length > 0)) {
+        return value.map((v: string) => v.trim());
+    }
+    LogError(
+        `[skip-config] exposedQueryCategories must be a list of category paths; got ${JSON.stringify(value)}. ` +
+        `Using the default: ${SKIP_EXPOSED_QUERY_CATEGORIES.join(', ')}.`,
+    );
+    return [...SKIP_EXPOSED_QUERY_CATEGORIES];
+}
+
 /** The parts of the MJAPI address that make up the URL Skip calls back to. */
 export interface SkipCallbackURLParts {
     baseUrl?: string;
@@ -454,6 +485,7 @@ export function getSkipConfig(): SkipClientConfig {
         enableEval: fileCfg?.enableEval === true,
         evalRunAgentTimeoutMs: resolveEvalRunAgentTimeoutMs(fileCfg),
         catalogByReference: fileCfg?.catalogByReference !== false,
+        exposedQueryCategories: resolveExposedQueryCategories(fileCfg),
     };
 }
 
