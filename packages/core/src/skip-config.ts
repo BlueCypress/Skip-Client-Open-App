@@ -257,6 +257,19 @@ export interface SkipClientConfig {
      * @default 600000 (10 minutes)
      */
     evalRunAgentTimeoutMs?: number;
+    /**
+     * When true, chat requests send the entity and query catalogs by reference (one manifest hash per kind)
+     * and resend items only when Skip reports a `catalog_miss`. Set to false to always send the full
+     * catalogs, as SDKs before this setting did. Requires a Skip Brain that understands `catalogRefs`.
+     *
+     * Set in `skip.config.cjs`:
+     * ```js
+     * module.exports = { catalogByReference: false };
+     * ```
+     *
+     * @default true
+     */
+    catalogByReference?: boolean;
 }
 
 /** Default for {@link SkipClientConfig.evalRunAgentTimeoutMs}: 10 minutes. */
@@ -440,6 +453,7 @@ export function getSkipConfig(): SkipClientConfig {
         entitiesToSend: resolveEntitiesToSend(fileCfg),
         enableEval: fileCfg?.enableEval === true,
         evalRunAgentTimeoutMs: resolveEvalRunAgentTimeoutMs(fileCfg),
+        catalogByReference: fileCfg?.catalogByReference !== false,
     };
 }
 

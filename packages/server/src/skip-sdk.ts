@@ -28,6 +28,7 @@ import {
     SkipClientCapability,
 } from '@askskip/types';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { isValidUUID, requireValidUUID } from './uuid-guard.js';
 import { noteBrainContact } from './registry-reconciler.js';
 import { DataContext } from '@memberjunction/data-context';
@@ -39,6 +40,7 @@ import { gzip as gzipCompress, createGunzip } from 'zlib';
 import { buildSkipCallbackURL, getSkipConfig, getDbType, resolveSkipApiKey, DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS } from '@askskip/core';
 import type { Agent } from 'undici';
 import { getEvalDispatcher, describeEvalError } from './eval-transport.js';
+import { SkipCatalogNegotiator } from './catalog-negotiation.js';
 import {
     getSkipCallbackKey,
     resetCallbackKeyProvisioning,
@@ -390,10 +392,9 @@ export class SkipSDK {
 
             // Call Skip API with SSE streaming support
             const chatUrl = `${(this.config.apiUrl || '').replace(/\/+$/, '')}/chat`;
-            const responses = await this.sendSSERequest(
+            const responses = await this.sendChatRequest(
                 chatUrl,
                 skipRequest,
-                this.buildHeaders(),
                 (streamMessage: SkipStreamMessage) => {
                     // Handle streaming status updates
                     // Queue messages come as flat objects: {responsePhase: 'queued'|'error', message: '...', error: '...'}
@@ -532,6 +533,27 @@ export class SkipSDK {
                 error: userFriendlyError
             };
         }
+    }
+
+    /**
+     * Sends a chat request, with its catalogs by reference when `catalogByReference` is on (the default):
+     * Skip's `catalog_miss` answers are handled here, before {@link chat} reads the final response, so a miss
+     * never confirms a callback key and every retry carries the same request (and the same callback key).
+     */
+    private async sendChatRequest(
+        chatUrl: string,
+        skipRequest: SkipAPIRequest,
+        streamCallback: (event: SkipStreamMessage) => void
+    ): Promise<SkipStreamMessage[]> {
+        const send = (request: SkipAPIRequest) => this.sendSSERequest(chatUrl, request, this.buildHeaders(), streamCallback);
+        const catalogs = getSkipConfig().catalogByReference === false ? null : SkipCatalogNegotiator.BuildRequestCatalogs(skipRequest);
+        if (!catalogs) {
+            return send(skipRequest);
+        }
+        // Accepted manifests are per Skip host and per organization (the API key decides the org on Skip's side).
+        const keyID = createHash('sha256').update(this.config.apiKey || '').digest('hex').slice(0, 16);
+        const negotiator = new SkipCatalogNegotiator(`${this.config.apiUrl || ''}|${keyID}`);
+        return negotiator.Send(skipRequest, catalogs, send, (responses) => this.findFinalResponse(responses));
     }
 
     /**
