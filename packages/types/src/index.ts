@@ -12,3 +12,4 @@ export * from './auth-types.js';
 export * from './error-types.js';
 export * from './registry-types.js';
 export * from './catalog-types.js';
+export * from './query-catalog-types.js';
