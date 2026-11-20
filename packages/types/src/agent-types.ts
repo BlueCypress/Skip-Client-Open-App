@@ -226,7 +226,7 @@ export class SkipAPILearningCycleRequest {
 
     /**
      * @deprecated Never send AI provider keys here. Skip ignores this field: it runs every request with the
-     * organization's own AI credentials, which are stored in Skip. The Skip SDK stopped sending it in 0.4.0.
+     * organization's own AI credentials, which are stored in Skip. The Skip SDK stopped sending it in 0.3.10.
      * Retained only so older clients still type-check.
      */
     apiKeys?: SkipAPIRequestAPIKey[];
