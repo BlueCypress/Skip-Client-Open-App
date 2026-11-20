@@ -9,6 +9,17 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./catalog": {
+      "types": "./dist/catalog.d.ts",
+      "default": "./dist/catalog.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "catalog": [
+        "dist/catalog.d.ts"
+      ]
     }
   },
   "files": [
@@ -16,7 +27,8 @@
   ],
   "scripts": {
     "build": "tsc",
-    "watch": "tsc --watch"
+    "watch": "tsc --watch",
+    "test": "vitest run"
   },
   "author": "BlueCypress",
   "license": "ISC",
@@ -37,6 +49,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
   }
 }
