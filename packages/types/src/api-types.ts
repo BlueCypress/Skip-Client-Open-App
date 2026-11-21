@@ -20,6 +20,7 @@ import type { SkipAPIRequestAPIKey } from './auth-types.js';
 import type { SkipAPIArtifact } from './artifact-types.js';
 import type { SkipAPIAgentNote, SkipAPIAgentNoteType } from './agent-types.js';
 import type { SkipErrorDetail } from './error-types.js';
+import type { SkipCatalogItems, SkipCatalogManifests, SkipCatalogRefs } from './catalog-types.js';
 import type { DatabasePlatform } from '@memberjunction/sql-dialect';
 
 /**
@@ -148,13 +149,25 @@ export class SkipAPIRequest {
     queries: SkipQueryInfo[];
 
     /**
-     * Lightweight catalog of ALL query names and category paths (regardless of status).
-     * Always populated regardless of the includeQueries flag, enabling accurate
-     * collision detection without the overhead of full query metadata.
-     * Includes all statuses because the database enforces name+category uniqueness
-     * across all queries, not just approved ones.
+     * @deprecated Not sent since Skip SDK 0.3.10, and ignored by Skip: it learns category paths from the queries it
+     * can see and from its own creates, and asks the client for the `Skip/` tree when it names a query. Older SDKs
+     * still send the name and category path of every query here.
      */
     queryCatalog?: SkipQueryCatalogEntry[];
+
+    /**
+     * The entity and query catalogs by reference: one manifest hash per kind. When a kind has a ref, its
+     * `entities` / `queries` array is sent empty and Skip resolves the catalog from its own cache. Skip answers
+     * `catalog_miss` when it doesn't hold a manifest; the client then retries with `catalogManifests` and
+     * `catalogItems`. Absent: the arrays carry the full catalogs (the original protocol).
+     */
+    catalogRefs?: SkipCatalogRefs;
+
+    /** Sent only on a retry after `catalog_miss`: the full manifest of each kind Skip reported missing. */
+    catalogManifests?: SkipCatalogManifests;
+
+    /** Sent only on a retry after `catalog_miss`: the items Skip is expected to lack, as canonical strings. */
+    catalogItems?: SkipCatalogItems;
 
     /**
      * The conversation ID
@@ -178,10 +191,11 @@ export class SkipAPIRequest {
     requestPhase: SkipRequestPhase;
 
     /**
-     * One or more API keys that are used for AI systems that Skip will access on behalf of the API caller
-     * NOTE: This is not where you put in the bearer token for the Skip API server itself, that goes in the header of the request
+     * @deprecated Never send AI provider keys here. Skip ignores this field: it runs every request with the
+     * organization's own AI credentials, which are stored in Skip. The Skip SDK stopped sending it in 0.3.10.
+     * Retained only so older clients still type-check.
      */
-    apiKeys: SkipAPIRequestAPIKey[];
+    apiKeys?: SkipAPIRequestAPIKey[];
 
     /**
      * Optional, array of artifacts that already exist for the given conversation. 

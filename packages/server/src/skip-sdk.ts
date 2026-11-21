@@ -14,9 +14,7 @@ import {
     SkipAPIClarifyingQuestionResponse,
     SkipRequestPhase,
     SkipResponsePhase,
-    SkipAPIRequestAPIKey,
     SkipQueryInfo,
-    SkipQueryCatalogEntry,
     SkipAPIAgentNote,
     SkipAPIAgentNoteType,
     SkipAPIArtifact,
@@ -26,8 +24,10 @@ import {
     SkipRetryAction,
     SkipErrorDetail,
     SkipClientCapability,
+    SKIP_EXPOSED_QUERY_CATEGORIES,
 } from '@askskip/types';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { isValidUUID, requireValidUUID } from './uuid-guard.js';
 import { noteBrainContact } from './registry-reconciler.js';
 import { DataContext } from '@memberjunction/data-context';
@@ -39,13 +39,14 @@ import { gzip as gzipCompress, createGunzip } from 'zlib';
 import { buildSkipCallbackURL, getSkipConfig, getDbType, resolveSkipApiKey, DEFAULT_EVAL_RUN_AGENT_TIMEOUT_MS } from '@askskip/core';
 import type { Agent } from 'undici';
 import { getEvalDispatcher, describeEvalError } from './eval-transport.js';
+import { SkipCatalogNegotiator } from './catalog-negotiation.js';
+import { BuildExposedQueries } from './query-catalog.js';
 import {
     getSkipCallbackKey,
     resetCallbackKeyProvisioning,
     confirmCallbackKeyDelivered,
     discardUnconfirmedCallbackKey,
 } from './skip-callback-key-provisioner.js';
-import { GetAIAPIKey } from '@memberjunction/ai';
 import { AIEngine } from '@memberjunction/aiengine';
 import { CopyScalarsAndArrays, UUIDsEqual, MJGlobal, MJEvent, MJEventType } from '@memberjunction/global';
 import mssql from 'mssql';
@@ -390,10 +391,9 @@ export class SkipSDK {
 
             // Call Skip API with SSE streaming support
             const chatUrl = `${(this.config.apiUrl || '').replace(/\/+$/, '')}/chat`;
-            const responses = await this.sendSSERequest(
+            const responses = await this.sendChatRequest(
                 chatUrl,
                 skipRequest,
-                this.buildHeaders(),
                 (streamMessage: SkipStreamMessage) => {
                     // Handle streaming status updates
                     // Queue messages come as flat objects: {responsePhase: 'queued'|'error', message: '...', error: '...'}
@@ -535,6 +535,27 @@ export class SkipSDK {
     }
 
     /**
+     * Sends a chat request, with its catalogs by reference when `catalogByReference` is on (the default):
+     * Skip's `catalog_miss` answers are handled here, before {@link chat} reads the final response, so a miss
+     * never confirms a callback key and every retry carries the same request (and the same callback key).
+     */
+    private async sendChatRequest(
+        chatUrl: string,
+        skipRequest: SkipAPIRequest,
+        streamCallback: (event: SkipStreamMessage) => void
+    ): Promise<SkipStreamMessage[]> {
+        const send = (request: SkipAPIRequest) => this.sendSSERequest(chatUrl, request, this.buildHeaders(), streamCallback);
+        const catalogs = getSkipConfig().catalogByReference === false ? null : SkipCatalogNegotiator.BuildRequestCatalogs(skipRequest);
+        if (!catalogs) {
+            return send(skipRequest);
+        }
+        // Accepted manifests are per Skip host and per organization (the API key decides the org on Skip's side).
+        const keyID = createHash('sha256').update(this.config.apiKey || '').digest('hex').slice(0, 16);
+        const negotiator = new SkipCatalogNegotiator(`${this.config.apiUrl || ''}|${keyID}`);
+        return negotiator.Send(skipRequest, catalogs, send, (responses) => this.findFinalResponse(responses));
+    }
+
+    /**
      * Locates the final wrapped Skip response in the event stream, scanning
      * backwards for the last `{type: 'complete', value: {...}}` event. Flat queue
      * events carry no `.value` and wrapped status updates are interim, so neither
@@ -615,11 +636,9 @@ export class SkipSDK {
             payload, // Pass through payload for incremental artifact building (e.g., PRD in progress)
             entities: baseRequest.entities || [],
             queries: baseRequest.queries || [],
-            queryCatalog: baseRequest.queryCatalog,
             notes: baseRequest.notes,
             noteTypes: baseRequest.noteTypes,
             userEmail: baseRequest.userEmail,
-            apiKeys: baseRequest.apiKeys,
             callingServerURL: baseRequest.callingServerURL,
             callingServerAPIKey: baseRequest.callingServerAPIKey,
             externalReferenceID,
@@ -647,9 +666,6 @@ export class SkipSDK {
     ): Promise<Partial<SkipAPIRequest>> {
         const entities = includeEntities ? this.buildEntities(forceEntityRefresh) : [];
         const queries = includeQueries ? this.buildQueries() : [];
-        // Always build the lightweight query catalog for collision detection,
-        // regardless of whether full queries are included
-        const queryCatalog = this.buildQueryCatalog();
         const { notes, noteTypes } = includeNotes ? await this.buildAgentNotes(contextUser) : { notes: [], noteTypes: [] };
         // Note: requests would be built here if includeRequests is true
 
@@ -674,11 +690,9 @@ export class SkipSDK {
         return {
             entities,
             queries,
-            queryCatalog,
             notes,
             noteTypes,
             userEmail: contextUser.Email,
-            apiKeys: this.buildAPIKeys(),
             callingServerURL,
             callingServerAPIKey,
             databasePlatform: getDbType(),
@@ -823,95 +837,13 @@ export class SkipSDK {
     }
 
     /**
-     * Build saved queries for Skip
+     * The queries Skip receives in its catalog: Approved queries in the exposed category roots
+     * (`exposedQueryCategories`, by default ground truth and the MJ feature categories). Skip fetches any other query
+     * it needs with the GetSkipCatalogItems callback.
      */
-    private buildQueries(status: "Pending" | "In-Review" | "Approved" | "Rejected" | "Obsolete" = 'Approved'): SkipQueryInfo[] {
-        const qe = QueryEngine.Instance;
-        const approvedQueries = qe.Queries.filter((q) => q.Status === status);
-
-        return approvedQueries.map((q) => ({
-            ID: q.ID,
-            Name: q.Name,
-            Description: q.Description,
-            Category: q.Category,
-            CategoryPath: this.buildQueryCategoryPath(qe, q.CategoryID),
-            CategoryID: q.CategoryID,
-            SQL: q.GetPlatformSQL(getDbType()),
-            Status: q.Status,
-            QualityRank: q.QualityRank,
-            Reusable: q.Reusable,
-            EmbeddingVector: q.EmbeddingVector,
-            EmbeddingModelID: q.EmbeddingModelID,
-            EmbeddingModelName: q.EmbeddingModel,
-            TechnicalDescription: q.TechnicalDescription,
-            Fields: qe.GetQueryFields(q.ID).map((f) => ({
-                ID: f.ID,
-                QueryID: f.QueryID,
-                Name: f.Name,
-                Description: f.Description,
-                Sequence: f.Sequence,
-                SQLBaseType: f.SQLBaseType,
-                SQLFullType: f.SQLFullType,
-                SourceEntityID: f.SourceEntityID,
-                SourceEntity: f.SourceEntity,
-                SourceFieldName: f.SourceFieldName,
-                IsComputed: f.IsComputed,
-                ComputationDescription: f.ComputationDescription,
-                IsSummary: f.IsSummary,
-                SummaryDescription: f.SummaryDescription
-            })),
-            Parameters: qe.GetQueryParameters(q.ID).map((p) => ({
-                ID: p.ID,
-                QueryID: p.QueryID,
-                Name: p.Name,
-                Description: p.Description,
-                Type: p.Type,
-                IsRequired: p.IsRequired,
-                DefaultValue: p.DefaultValue,
-                SampleValue: p.SampleValue,
-                ValidationFilters: p.ValidationFilters
-            })),
-            Entities: qe.QueryEntities.filter(e => UUIDsEqual(e.QueryID, q.ID)).map((e) => ({
-                ID: e.ID,
-                QueryID: e.QueryID,
-                EntityID: e.EntityID,
-                Entity: e.Entity
-            })),
-            SQLDialectID: q.SQLDialectID,
-            UsesTemplate: q.UsesTemplate,
-            IsApproved: q.IsApproved,
-            CacheEnabled: q.CacheEnabled,
-            CacheMaxSize: q.CacheMaxSize,
-            CacheTTLMinutes: q.CacheTTLMinutes,
-            CacheValidationSQL: q.CacheValidationSQL
-        }));
-    }
-
-    /**
-     * Recursively build category path for a query
-     */
-    private buildQueryCategoryPath(qe: QueryEngine, categoryID: string): string {
-        const cat = qe.Categories.find((c) => UUIDsEqual(c.ID, categoryID));
-        if (!cat) return '';
-        if (!cat.ParentID) return cat.Name;
-        const parentPath = this.buildQueryCategoryPath(qe, cat.ParentID);
-        return parentPath ? `${parentPath}/${cat.Name}` : cat.Name;
-    }
-
-    /**
-     * Build a lightweight catalog of ALL query names and category paths (regardless of status).
-     * Always called regardless of includeQueries, so collision detection
-     * has accurate data even when full query metadata is not transmitted.
-     * Includes all statuses because the database enforces name+category uniqueness
-     * across all queries, not just approved ones.
-     */
-    private buildQueryCatalog(): SkipQueryCatalogEntry[] {
-        const qe = QueryEngine.Instance;
-
-        return qe.Queries.map((q) => ({
-            Name: q.Name,
-            CategoryPath: this.buildQueryCategoryPath(qe, q.CategoryID)
-        }));
+    private buildQueries(): SkipQueryInfo[] {
+        const roots = getSkipConfig().exposedQueryCategories ?? SKIP_EXPOSED_QUERY_CATEGORIES;
+        return BuildExposedQueries(QueryEngine.Instance, roots);
     }
 
     /**
@@ -1186,38 +1118,6 @@ export class SkipSDK {
             LogError(`Failed to load input artifacts for conversation ${conversationId}: ${error}`);
             return [];
         }
-    }
-
-    /**
-     * Build API keys for AI services
-     */
-    private buildAPIKeys(): SkipAPIRequestAPIKey[] {
-        return [
-            {
-                vendorDriverName: 'OpenAILLM',
-                apiKey: GetAIAPIKey('OpenAILLM')
-            },
-            {
-                vendorDriverName: 'AnthropicLLM',
-                apiKey: GetAIAPIKey('AnthropicLLM')
-            },
-            {
-                vendorDriverName: 'GeminiLLM',
-                apiKey: GetAIAPIKey('GeminiLLM')
-            },
-            {
-                vendorDriverName: 'GroqLLM',
-                apiKey: GetAIAPIKey('GroqLLM')
-            },
-            {
-                vendorDriverName: 'MistralLLM',
-                apiKey: GetAIAPIKey('MistralLLM')
-            },
-            {
-                vendorDriverName: 'CerebrasLLM',
-                apiKey: GetAIAPIKey('CerebrasLLM')
-            }
-        ];
     }
 
     /**

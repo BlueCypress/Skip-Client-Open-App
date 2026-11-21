@@ -20,7 +20,6 @@
  */
 
 import {
-    IQueryInfoBase,
     IQueryFieldInfoBase,
     IQueryParameterInfoBase,
     IQueryEntityInfoBase
@@ -198,13 +197,14 @@ export class SkipQueryEntityInfo implements IQueryEntityInfoBase {
 }
 
 /**
- * Complete metadata about a stored query, including its SQL, approval status, quality ranking,
- * and field definitions. This information allows Skip to understand and utilize pre-built
- * queries for analysis and reporting.
+ * Complete metadata about a stored query, including its SQL, approval status and field definitions.
+ * This information allows Skip to understand and utilize pre-built queries for analysis and reporting.
  *
- * Implements IQueryInfoBase for consistency with MJCore types.
+ * Mirrors MJCore's IQueryInfoBase, but no longer implements it: the SDK leaves out the members Skip
+ * never reads (quality rank, embedding model, dialect, template flag and cache settings), which
+ * IQueryInfoBase requires.
  */
-export class SkipQueryInfo implements IQueryInfoBase {
+export class SkipQueryInfo {
     /**
      * Unique identifier for the query record
      */
@@ -239,18 +239,21 @@ export class SkipQueryInfo implements IQueryInfoBase {
     Status: 'Pending' | 'Approved' | 'Rejected' | 'Expired';
     /**
      * Value indicating the quality of the query, higher values mean better quality
+     * @deprecated Not sent by the Skip SDK since 0.3.10: Skip never read it.
      */
-    QualityRank: number;
+    QualityRank?: number;
     /**
      * Optional JSON-serialized embedding vector for the query, used for similarity search and query analysis
      */
     EmbeddingVector?: string;
     /**
-     * The AI Model ID used to generate the embedding vector for this query. Required for vector similarity comparisons.
+     * The AI Model ID used to generate the embedding vector for this query.
+     * @deprecated Not sent by the Skip SDK since 0.3.10: Skip never read it.
      */
     EmbeddingModelID?: string;
     /**
      * The name of the AI Model used to generate the embedding vector for this query.
+     * @deprecated Not sent by the Skip SDK since 0.3.10: Skip never read it.
      */
     EmbeddingModelName?: string;
     /**
@@ -279,12 +282,14 @@ export class SkipQueryInfo implements IQueryInfoBase {
     Reusable: boolean = false;
     /**
      * Foreign key to the SQL dialect this query's SQL is written in
+     * @deprecated Not sent by the Skip SDK since 0.3.10: Skip never read it.
      */
-    SQLDialectID: string | null = null;
+    SQLDialectID?: string | null;
     /**
      * Whether the SQL uses Nunjucks template markers
+     * @deprecated Not sent by the Skip SDK since 0.3.10: Skip never read it.
      */
-    UsesTemplate: boolean = false;
+    UsesTemplate?: boolean;
     /**
      * Whether this query has been formally approved for production use
      */
@@ -292,10 +297,14 @@ export class SkipQueryInfo implements IQueryInfoBase {
         return this.Status === 'Approved';
     }
 
-    CacheEnabled: boolean = false;
-    CacheMaxSize: number;
-    CacheTTLMinutes: number;
-    CacheValidationSQL: string;
+    /** @deprecated Not sent by the Skip SDK since 0.3.10: Skip never read it. */
+    CacheEnabled?: boolean;
+    /** @deprecated Not sent by the Skip SDK since 0.3.10: Skip never read it. */
+    CacheMaxSize?: number;
+    /** @deprecated Not sent by the Skip SDK since 0.3.10: Skip never read it. */
+    CacheTTLMinutes?: number;
+    /** @deprecated Not sent by the Skip SDK since 0.3.10: Skip never read it. */
+    CacheValidationSQL?: string;
 }
 
 /**
