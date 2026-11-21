@@ -21,6 +21,7 @@ import {
     SkipAPIArtifactVersion,
     SkipAPIArtifactType,
     SkipErrorCode,
+    SkipErrorType,
     SkipRetryAction,
     SkipErrorDetail,
     SkipClientCapability,
@@ -474,6 +475,13 @@ export class SkipSDK {
                 // explanation is in the response's system message.
                 if (detail?.code === SkipErrorCode.request_timeout) {
                     LogStatus('[SkipSDK] Skip request timed out; not retrying');
+                }
+
+                // The request reached one of the organization's spending limits. Never retried
+                // automatically: a retry would reach the same limit. The user-facing explanation
+                // (which limit, and who can raise it) is in the response's system message.
+                if (detail?.type === SkipErrorType.spend_limit) {
+                    LogStatus(`[SkipSDK] Skip request stopped at a spending limit (${detail.code}); not retrying`);
                 }
 
                 // Handle callback key re-provisioning: if Skip reports the callback

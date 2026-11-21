@@ -351,6 +351,33 @@ describe('SkipSDK error handling', () => {
             expect(mockResetCallbackKeyProvisioning).not.toHaveBeenCalled();
         });
 
+        it.each([
+            [SkipErrorCode.request_cost_cap_reached, SkipRetryAction.modify_and_retry, "Agent tree cost budget exceeded ($5.0123/$5.0000 across tree)"],
+            [SkipErrorCode.monthly_spend_limit_reached, SkipRetryAction.do_not_retry, 'Monthly spend limit reached: $512.34 spent of $500.00 this month'],
+        ])('surfaces a spending limit (%s) without retrying', async (code, retryAction, message) => {
+            const { sdk, setResponses, sendSSERequest } = createSdkWithMockedSSE();
+            const detail = buildErrorDetail({ type: SkipErrorType.spend_limit, code, message, retryAction });
+
+            setResponses([{
+                type: 'complete',
+                value: {
+                    success: false,
+                    errorDetail: detail,
+                    responsePhase: SkipResponsePhase.analysis_complete,
+                    messages: [],
+                },
+            }]);
+
+            const result = await sdk.chat(makeCallOptions());
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBe(message);
+            expect(result.errorDetail!.type).toBe(SkipErrorType.spend_limit);
+            expect(result.errorDetail!.code).toBe(code);
+            expect(sendSSERequest).toHaveBeenCalledTimes(1);
+            expect(mockResetCallbackKeyProvisioning).not.toHaveBeenCalled();
+        });
+
         it('does not retry when retryAction is not reprovision_and_retry', async () => {
             const { sdk, setResponses } = createSdkWithMockedSSE();
             const detail = buildErrorDetail({
