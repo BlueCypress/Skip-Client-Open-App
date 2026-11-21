@@ -1,5 +1,28 @@
 # @askskip/core
 
+## 0.3.10
+
+### Patch Changes
+
+- 352d237: Chat requests send the entity and query catalogs by reference: one manifest hash per kind (`catalogRefs`) instead of the full catalogs. When Skip doesn't hold a manifest it answers `catalog_miss`, and the SDK resends the manifest plus only the items that changed since the last manifest Skip accepted (every item once per MJAPI process). If Skip still lacks items it lists them, and the SDK sends exactly those; after two resends it falls back to the full catalogs. On More Cheese an unchanged turn drops from about 680 KB (gzipped) to about 8 KB.
+
+  **Requires a Skip Brain that understands `catalogRefs`.** Upgrade only after Skip has released it. `catalogByReference: false` in `skip.config.cjs` sends the full catalogs as before. Eval runs (`/eval/run`) always send the full catalogs.
+
+  New: `@askskip/types/catalog` (canonical form, hashing, verification), `SkipErrorCode.catalog_miss`, `SkipRetryAction.resend_catalog`.
+
+- b1b6be6: The SDK no longer sends query properties Skip never reads: `QualityRank`, `EmbeddingModelID`, `EmbeddingModelName`, `SQLDialectID`, `UsesTemplate`, `CacheEnabled`, `CacheMaxSize`, `CacheTTLMinutes` and `CacheValidationSQL`. `IsApproved` and `CategoryID` are still sent. On `SkipQueryInfo` those members are now optional and deprecated, so `SkipQueryInfo` no longer implements MJ's `IQueryInfoBase`, which requires some of them.
+- 529972d: The query catalog sent to Skip now carries only the exposed queries: Approved queries under `Golden-Queries`, `MJ/Lists` and `MJ/Tags`, configurable with `exposedQueryCategories` in `skip.config.cjs`. Skip fetches any other query it needs with `GetSkipCatalogItems`. The `queryCatalog` request field (every query's name and category path) is no longer sent; Skip no longer reads it. Requires the Skip Brain release with the query catalog callbacks.
+- 79bb558: Two callbacks Skip uses for queries its catalog doesn't carry. `GetSkipCatalogItems` returns queries by ID or by name and category path, in any status, as catalog items (the same canonical content and hash as the query catalog); a query that isn't found is reported, not thrown. `GetSkipQueryCategoryTree` returns every category at or under a path with how many queries each holds, for naming a new query; no query names are returned. Both need `entity:read` on `MJ: Queries`, which the Skip callback key already has, so no new scope or migration.
+- dc9ce5d: **Security:** the SDK no longer sends the host's AI provider keys to Skip. Every chat request carried the MJAPI's OpenAI, Anthropic, Gemini, Groq, Mistral and Cerebras keys in `apiKeys`; Skip never used them (it runs each request with the organization's own credentials, stored in Skip). `SkipAPIRequest.apiKeys` and `SkipAPILearningCycleRequest.apiKeys` are now optional and deprecated. Works with every Skip Brain version: none read the field.
+- db3e510: The SDK no longer sends each approved query's `EmbeddingVector` to Skip. Skip never read it (it embeds queries itself), and on More Cheese it was about 750,000 characters of every request. `EmbeddingModelID` and `EmbeddingModelName` are still sent.
+- Updated dependencies [352d237]
+- Updated dependencies [b1b6be6]
+- Updated dependencies [529972d]
+- Updated dependencies [79bb558]
+- Updated dependencies [dc9ce5d]
+- Updated dependencies [db3e510]
+  - @askskip/types@0.3.10
+
 ## 0.3.9
 
 ### Patch Changes
