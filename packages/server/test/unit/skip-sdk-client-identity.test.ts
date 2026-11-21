@@ -53,7 +53,7 @@ vi.mock('@memberjunction/core-entities', () => ({
 }));
 
 vi.mock('@memberjunction/ai', () => ({
-    GetAIAPIKey: vi.fn().mockReturnValue(''),
+    GetAIAPIKey: vi.fn().mockReturnValue('sk-must-never-be-sent'),
 }));
 
 vi.mock('@memberjunction/aiengine', () => ({
@@ -127,5 +127,12 @@ describe('SkipSDK client identity', () => {
         const request = await sendOneRequest();
 
         expect(request.skipSDKVersion).toBe(version);
+    });
+
+    it('never sends AI provider keys: Skip uses the organization\'s own credentials', async () => {
+        const request = await sendOneRequest();
+
+        expect('apiKeys' in request).toBe(false);
+        expect(JSON.stringify(request)).not.toContain('sk-must-never-be-sent');
     });
 });
