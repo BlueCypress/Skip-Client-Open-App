@@ -36,6 +36,8 @@ export const SkipErrorType = {
     query: 'query',
     /** The request ran past Skip's time limit and was stopped */
     timeout: 'timeout',
+    /** The request reached one of the organization's Skip spending limits */
+    spend_limit: 'spend_limit',
     /** Unclassified error */
     unknown: 'unknown',
 } as const;
@@ -111,6 +113,20 @@ export const SkipErrorCode = {
      * age. Retrying the same request will usually time out again; narrow it first.
      */
     request_timeout: 'request_timeout',
+
+    // ── spend_limit ─────────────────────────────────────────────────────
+    /**
+     * Skip stopped the request because it reached the organization's cost cap for a single request
+     * (`skip.usage.maxCostPerRequest`). Retrying the same request will usually reach it again; narrow it
+     * first, or an administrator raises the cap.
+     */
+    request_cost_cap_reached: 'request_cost_cap_reached',
+    /**
+     * Skip refused the request before running it because the organization has reached its monthly spend limit
+     * (`skip.usage.monthlySpendLimit`). Nothing was spent on it. Requests are refused until the limit resets on
+     * the 1st (UTC) or an administrator raises it.
+     */
+    monthly_spend_limit_reached: 'monthly_spend_limit_reached',
 
     // ── unknown ─────────────────────────────────────────────────────────
     /** Catch-all for unclassified errors */
