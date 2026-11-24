@@ -36,8 +36,9 @@ import { SkipSDK } from './skip-sdk.js';
 import { APP_OWNED_SCOPE_PATHS, REQUIRED_SCOPE_PATHS } from './skip-callback-key-provisioner.js';
 import { markRegistryReconciled } from './registry-reconciler.js';
 
-// Side-effect import: ensure SkipProxyAgent's @RegisterClass(BaseAgent, 'SkipProxyAgent') runs.
+// Side-effect imports: ensure SkipProxyAgent's and SkipLocalAgent's @RegisterClass decorators run.
 import './skip-agent.js';
+import './skip-local-agent.js';
 
 const SKIP_SERVICE_EMAIL = 'skip-service@skip.internal';
 
