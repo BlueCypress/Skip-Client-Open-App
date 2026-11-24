@@ -65,6 +65,10 @@ On the first request, the callback key provisioner will automatically:
 2. Send the key to Skip (one time only)
 3. Skip stores it encrypted for future callbacks
 
+## Upgrading
+
+To move a client environment to a newer version, run `mj app upgrade skip-client` from the client repo root, then build, commit and deploy. See [UPGRADING.md](UPGRADING.md) for the full steps.
+
 ## Uninstalling
 
 ```bash
@@ -200,6 +204,7 @@ packages/types/                     # @askskip/types — Skip request/response t
 packages/core/                      # @askskip/core — config, record helpers, install hooks
 packages/server/                    # @askskip/server — server runtime package
 CONFIGURATION.md                    # Full configuration reference
+UPGRADING.md                        # Upgrading a client environment
 PUBLISHING.md                       # npm publishing guide
 ```
 
