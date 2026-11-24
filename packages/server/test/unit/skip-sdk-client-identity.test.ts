@@ -118,7 +118,10 @@ describe('SkipSDK client identity', () => {
     it('declares that it forwards artifact directives', async () => {
         const request = await sendOneRequest();
 
-        expect(request.clientCapabilities).toEqual([SkipClientCapability.ArtifactDirective]);
+        expect(request.clientCapabilities).toEqual([
+            SkipClientCapability.ArtifactDirective,
+            SkipClientCapability.SkipLocal,
+        ]);
     });
 
     it('sends its own package version', async () => {

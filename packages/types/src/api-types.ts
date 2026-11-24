@@ -263,12 +263,121 @@ export class SkipAPIRequest {
      * a Skip run to a client build — gate behavior on `clientCapabilities`, not on this.
      */
     skipSDKVersion?: string;
+
+    /**
+     * Optional governed Canon metadata from the client's `"MJ Canon"` semantic graph
+     * (`MJ: Graph Concepts`, `MJ: Graph Edges`, `MJ: Entity Alternate Base Views`, and
+     * optional deterministic Markdown domain document from `CanonGraphEngine.RenderCanonDocument`).
+     */
+    canon?: SkipCanonMetadata;
+
+    /**
+     * Optional routing hint passed from `SkipLocalAgent` when escalating to Skip Brain.
+     */
+    routingHint?: SkipRoutingHint;
+
+    /**
+     * Optional validated query and findings context carried when `SkipLocalAgent` escalates
+     * a local answer to `Skip: Component Builder` so Skip Brain does not repeat completed work.
+     */
+    promotionContext?: SkipPromotionContext;
+}
+
+/**
+ * Routing hint passed from `SkipLocalAgent` to Skip Brain.
+ */
+export interface SkipRoutingHint {
+    intent: 'build' | 'modify' | 'approve' | 'analyze';
+    confidence: 'high' | 'medium' | 'low';
+    targetArtifactId?: string;
+}
+
+/**
+ * Validated query and summary context carried when a local answer is promoted to
+ * `Skip: Component Builder`.
+ */
+export interface SkipPromotionContext {
+    queryName?: string;
+    categoryPath?: string;
+    sql?: string;
+    title?: string;
+    summary?: string;
+    sourceSubAgent?: string | null;
+}
+
+/**
+ * Shipped `MJ: Graph Concepts` concept types (per MJ #6675 Decision 5).
+ */
+export type SkipCanonConceptType = 'Policy' | 'Metric' | 'Process' | 'Role' | 'Domain' | 'Term' | (string & {});
+
+/**
+ * Shipped `MJ: Graph Concepts` statuses (per MJ #6675 Decision 5).
+ */
+export type SkipCanonConceptStatus = 'Draft' | 'Proposed' | 'Approved' | 'Deprecated' | (string & {});
+
+/** Summary of a governed concept in the client's `"MJ Canon"` graph. */
+export interface SkipCanonConceptSummary {
+    id: string;
+    name: string;
+    displayName?: string | null;
+    conceptType: SkipCanonConceptType;
+    status: SkipCanonConceptStatus;
+    definition: string;
+    antiDefinition?: string | null;
+    synonyms?: string[];
+    authorityTier?: string | null;
+    ownerEntityName?: string | null;
+    precedenceRank: number;
+    confidenceScore?: number | null;
+}
+
+/** Summary of a semantic edge in the client's `"MJ Canon"` graph. */
+export interface SkipCanonEdgeSummary {
+    id: string;
+    edgeType: string;
+    sourceEntityName: string;
+    sourceRecordID: string;
+    targetEntityName: string;
+    targetRecordID: string;
+    direction: string;
+    weight: number;
+    confidenceScore?: number | null;
+    status: string;
+    rationale?: string | null;
+    predicate?: string | null;
+    origin: string;
+}
+
+/** Summary of an alternate base view (ABV) in the client's `"MJ Canon"` graph. */
+export interface SkipCanonAlternateBaseViewSummary {
+    id: string;
+    entityID: string;
+    entityName?: string;
+    name: string;
+    viewName: string;
+    viewSchema: string;
+    description?: string | null;
+    filterSummary: string;
+    priority: number;
+    isDefaultForAI: boolean;
+    status: string;
+}
+
+/** Canonical domain knowledge payload carried in the `canon` request field. */
+export interface SkipCanonMetadata {
+    concepts: SkipCanonConceptSummary[];
+    edges: SkipCanonEdgeSummary[];
+    alternateBaseViews?: SkipCanonAlternateBaseViewSummary[];
+    /** Deterministic collapsed Markdown domain document rendered by CanonGraphEngine. */
+    domainDocument?: string;
 }
 
 /** Optional features a Skip SDK declares in {@link SkipAPIRequest.clientCapabilities}. */
 export const SkipClientCapability = {
     /** The client forwards a response's `artifactRequest` to MJ as an `artifactDirective`. */
     ArtifactDirective: 'artifactDirective',
+    /** The client runs `SkipLocalAgent` for local data answers, schema guide, analysis, and quick charts. */
+    SkipLocal: 'skipLocal',
 } as const;
 
 export type SkipClientCapability = typeof SkipClientCapability[keyof typeof SkipClientCapability];
